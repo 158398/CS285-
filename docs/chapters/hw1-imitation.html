@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 1 讲 · 模仿学习:分布偏移 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="hw2-policy-gradient.html">第 2 讲</a><a href="hw3-q-learning.html">第 3 讲</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">第 1 讲 · 误差观:分布偏移</span>
+    <h1>模仿学习:<em>向已经学会的专家学习</em></h1>
+    <p>没有奖励信号、只有专家演示,怎么让神经网络学会专家行为?
+      主线答案:把模仿当监督学习(BC),再直视它唯一会犯的绝症——分布偏移(DAgger)。</p>
+  </section>
+
+  <div data-tabs>
+    <div class="tabbar">
+      <button class="tab-btn active" data-tab="t-problem">① 问题与任务</button>
+      <button class="tab-btn" data-tab="t-algo">② 算法</button>
+      <button class="tab-btn" data-tab="t-problems">③ 算法设计时遇到的问题</button>
+      <button class="tab-btn" data-tab="t-confusions">④ 卡壳点</button>
+      <button class="tab-btn" data-tab="t-engineering">⑤ 工程落地</button>
+      <button class="tab-btn" data-tab="t-code">⑥ 代码实现</button>
+      <button class="tab-btn" data-tab="t-quiz">⑦ 自测</button>
+    </div>
+
+    <div class="tab-panel active" id="t-problem">
+      <h2>① 问题与任务:不给奖励,怎么学?</h2>
+      <p>强化学习的标准设定是"环境给奖励,智能体自己摸索"。HW1 把奖励信号抽掉:
+        只给你课程组用 RL 预训好的<b>专家策略和它的演示数据</b>(四个 MuJoCo 环境:
+        Ant 四足稳定、Hopper 单足易摔、Walker2d 双足、HalfCheetah 不终止),
+        要求用纯模仿让网络复现专家行为。</p>
+      <p>这个问题值得研究,不只是因为简单——它是几乎所有现代机器人学习管线的入口形态:
+        遥操作演示、真机示教、把"贵策略"蒸馏成"便宜策略"(我后来在 VLA 方向的 ACT/Diffusion Policy
+        与 LeRobot 复现,都是同一条模仿学习谱系)。</p>
+      <div class="note"><b>官方文档(hw1.pdf)写了什么:</b>四件事——
+        ① 理论推导两题:证明模仿误差下分布漂移 ≤ 2Tε,并由此推出性能损失界(末态奖励 O(Tε)、稠密奖励 O(T²ε));
+        ② 实现 BC,在 Ant 与 Hopper 上各交一张对比表;
+        ③ 任选一组超参做扫描实验(我选了训练步数);
+        ④ 实现 DAgger,交两个任务 10 轮迭代的学习曲线。</div>
+      <p>本讲的主线矛盾一句话就能说完:<b>BC 在 Ant 上一次到位(97.9%),在 Hopper 上只剩 30%——
+        同一个算法、同量数据,为什么两副命运?</b>答案不在模型,在分布。</p>
+    </div>
+
+    <div class="tab-panel" id="t-algo">
+      <h2>② 算法:BC 与 DAgger</h2>
+      <h3>先把"模仿"翻译成数学:它就是个求最大似然的问题</h3>
+      <p>专家给你一堆 (状态, 动作) 对。最自然的模仿方式:让每个专家动作,在你的策略下概率最大。写成式子:</p>
+      <pre>max_θ  E_(s,a)~D [ log π_θ(a|s) ]</pre>
+      <table>
+        <tr><th>符号</th><th>名字</th><th>通俗含义</th></tr>
+        <tr><td>θ</td><td>theta</td><td>神经网络的全部权重——我们唯一能拧的旋钮</td></tr>
+        <tr><td>π_θ(a|s)</td><td>策略 pi</td><td>在状态 s 下,网络给动作 a 打的"概率分"</td></tr>
+        <tr><td>D</td><td>数据集</td><td>专家演示:一堆 (状态 s, 专家动作 a) 对</td></tr>
+        <tr><td>E[·]</td><td>期望</td><td>对数据集里的样本取平均</td></tr>
+        <tr><td>log</td><td>对数</td><td>把概率连乘变连加;小概率的错误会被放得很大(罚得重)</td></tr>
+      </table>
+      <p>这个式子就是<b>最大似然估计(MLE)</b>:让"标准答案"在你的答案库里尽量好查。
+        它的全部信息只有"专家在 s 做了什么"——没有奖励、没有后果、没有纠错。
+        所以 BC 学到的是<b>条件分布</b>"专家在状态 s 倾向做什么":是相关,不是因果。</p>
+
+      <h3>连续动作怎么打分:高斯策略</h3>
+      <p>连续动作没法列概率表,就让网络输出一个高斯分布:</p>
+      <pre>π_θ(a|s) = N( μ_θ(s), diag(σ²) )
+a = μ_θ(s) + σ ⊙ ξ,   ξ ~ N(0,1)      (网络出均值 μ,采样时加点噪声)</pre>
+      <p>对应的损失函数(负对数似然,NLL):</p>
+      <pre>−log π(a|s) = Σ_j [ (a_j − μ_j)² / 2σ_j²  +  log σ_j  +  常数 ]</pre>
+      <p>逐项看:第一项把 μ 拉向专家动作,且按 1/σ² 加权——网络越有把握的维度,越用力拉;
+        第二项 log σ 是"防塌缩阀":阻止网络靠把 σ 缩到 0 来作弊(那样 −log π 会爆)。
+        <b>当 σ 固定为 1 时,NLL 正好就是 MSE</b>——均方误差是负对数似然的特例,
+        这就是为什么有人管 BC 叫"回归"。</p>
+
+      <h3>数学原理:BC 到底学没学会"怎么活"</h3>
+      <p>没有。BC 只学了"专家长什么样"(条件分布),它不知道:
+        ① 哪个动作<b>好</b>(没有奖励概念);② 动作的后果(训练时环境不在场);
+        ③ 错了怎么救(专家数据里没有"救"的示范)。
+        所以它怕"没见过的地方"——这正是③要讲的事故(分布偏移)。</p>
+
+      <h3>DAgger:把"没见过的地方"也变成教材</h3>
+      <p>协议(每轮只做一件事——换一批"考试范围"):</p>
+      <pre>第 0 轮:用专家数据训出 π₁(就是 BC)
+第 k 轮:π_k 自己跑 → 收集它踩到的状态
+        专家给这些状态重新打标签 → 并入数据集(老数据不删)
+        继续训练 → π_{k+1}</pre>
+      <p>数学原理:DAgger 求的是<b>不动点</b>——"在自身诱导的状态分布上表现良好的策略"。
+        不动点没法一步解出(策略变,分布就变),只能迭代逼近:
+        修完 A 类错,策略走得更远,踩到 B 类新状态,再修 B 类……直到策略不再访问未覆盖的状态。
+        老数据永远有效,因为状态是物理事实、标签是专家函数的值,二者都不随策略版本过期。</p>
+
+      <h3>结果:两个算法各给你什么</h3>
+      <table>
+        <tr><th></th><th>BC</th><th>DAgger</th></tr>
+        <tr><td>产物</td><td>一个"像专家"的条件分布</td><td>一个"在自己分布上也好"的策略</td></tr>
+        <tr><td>理论损失界</td><td>O(T²ε)(稠密奖励世界)</td><td>O(Tε)</td></tr>
+        <tr><td>成本</td><td>极低(一次监督学习)</td><td>N 倍(每轮都要 rollout + 问专家)</td></tr>
+        <tr><td>天花板</td><td colspan="2">都是专家本身——模仿不会比老师好(它是"下限复制器")</td></tr>
+      </table>
+      <p>工程铁律(⑤ 会看到证据):<b>永远先跑 BC</b>——几分钟成本,它是所有后续决策的基准线;
+        不够用再上 DAgger(任务对误差敏感、专家数据覆盖窄的时候)。</p>
+    </div>
+
+    <div class="tab-panel" id="t-problems">
+      <h2>③ 算法设计时遇到的问题:分布为什么会漂,漂了怎么办</h2>
+      <h3>问题:测试分布依赖你自己的模型</h3>
+      <p>普通监督学习里,模型不影响测试数据的来源(猫狗分类器不改变测试图片)。
+        但 BC 里,<b>你的策略决定你测试时遇到什么状态</b>:训练用的是专家走过的状态,
+        测试时策略却走自己的路——一步踏错,就进入专家从没去过的地方,在那里 BC 没有任何指导,
+        猜错一步偏得更远。这就是 covariate shift,而且它是<b>结构性</b>的:
+        要在自己的分布上收数据,得先有自己的策略——死循环,DAgger 用迭代打破它。</p>
+      <h3>理论题给的精确账:2Tε、O(Tε)、O(T²ε)</h3>
+      <p>设模仿的分歧率 ≤ ε。用耦合+并集界可证:两策略的 t 步状态分布差 ≤ 2Tε(<b>漂移量</b>);
+        只有末态奖励时性能损失 O(Tε);稠密奖励时每步都计,损失叠成 O(T²ε)(<b>损失量</b>)。
+        MuJoCo 全是稠密奖励,所以 Hopper 生在 O(T²ε) 的世界:T=1000 时,T 和 T² 是 1000 倍的差距——
+        这就是 30% 和追平专家之间的距离。</p>
+      <h3>治法不止 DAgger:五族方案,按"在哪里动手"分</h3>
+      <table>
+        <tr><th>族</th><th>在哪动手</th><th>治什么</th><th>代表</th></tr>
+        <tr><td>改数据分布</td><td>训练分布→测试分布</td><td>分布偏移(O(T²ε)→O(Tε))</td><td><b>DAgger</b>、扰动+恢复标注</td></tr>
+        <tr><td>改数据筛选/加权</td><td>数据质量</td><td>脏演示数据</td><td>filtered BC、RWR</td></tr>
+        <tr><td>改模型</td><td>无记忆→序列</td><td>部分可观测/长时依赖</td><td>Decision Transformer、VLA 主线</td></tr>
+        <tr><td>改匹配目标</td><td>逐点回归→分布匹配</td><td>模式平均化(单高斯的折中)</td><td>GAIL、AIRL</td></tr>
+        <tr><td>改问题本身</td><td>模仿→强化</td><td>目标错位、可超越专家</td><td>REINFORCE→PPO、DQN/SAC(第 2/3 讲)</td></tr>
+      </table>
+      <p>要点:DAgger 是唯一针对病根的;GAIL 匹配整个占有测度(BC 只匹配条件半边 π(a|s),对"你去哪"无能为力);
+        "先模仿预训练、再 RL 微调"是工业标准配方——第五族就是后面两讲。</p>
+      <h3>占有测度:把"你去哪"和"你做什么"打包的对象</h3>
+      <p>让策略跑很久,每走一步就在 (s,a) 处撒一粒沙,沙堆形状即占有测度 ρ_π(s,a)。
+        三个性质值得背:① ρ = 状态分布 × 策略;② 回报是 ρ 的线性函数(J = T·E_ρ[r])——
+        所以"占有测度相同 ⇒ 回报相同",这是"分布匹配即模仿"的理论依据;
+        ③ covariate shift 就是 ρ 的状态边际漂了。我们的概念图 4(见⑤)把这件事画成了看得见的环。</p>
+    </div>
+
+    <div class="tab-panel" id="t-confusions">
+      <h2>④ 卡壳点(我当年卡住的三个)</h2>
+      <div class="qa"><b>卡壳点 1:同一个 BC,为什么 Ant 几乎满分、Hopper 直接崩盘?</b><br>
+        差距来自<b>动力学对误差的放大系数</b>:Ant 四足低重心,小扰动被动力学吸收(局部稳定),
+        2000 样本就近满分;Hopper 单足开环不稳,微扰被重力放大 → 偏出训练走廊 → 分歧率失控。
+        实测指纹是回合长度:Hopper BC 平均 <b>353</b> 步就摔死(满分要 1000)——"回报差"的大头是活得短。</div>
+      <div class="qa"><b>卡壳点 2:DAgger 加的到底是数据还是模型?</b><br>
+        都不是,它改的是<b>数据从哪来</b>。BC 的数据全部来自专家;DAgger 让学习者自己跑,
+        把"学习者踩出来的状态"交给专家重打标签。模型一行没改,训练分布却被换掉了——
+        收益与 BC 的分布失配程度成正比(Hopper 1121→3725;Ant 已满 97.9%,无利可图)。</div>
+      <div class="qa"><b>卡壳点 3:训练 loss 很小,为什么回报还是很差?</b><br>
+        我做过一次失败的对照实验(自定义 MSE + 自适应学习率):训练 loss 低到 0.013,
+        回报却全面溃败(Ant 745 vs 基线 4586)。结论:BC 的痛点<b>不在训练集拟合,而在闭环分布偏移</b>——
+        优化器层面的花样天花板很低;评估 BC 只能看闭环回报,不能看训练 loss。</div>
+    </div>
+
+    <div class="tab-panel" id="t-engineering">
+      <h2>⑤ 工程落地:实验、数据与翻车</h2>
+      <h3>主表( seed=1,2×64 tanh,lr 5e-3 )</h3>
+      <table>
+        <tr><th>任务</th><th>BC 回报</th><th>专家回报</th><th>相对专家</th><th>平均回合长度</th></tr>
+        <tr><td>Ant-v4</td><td>4585.8 ± 16.0</td><td>4681.9 ± 30.7</td><td><b>97.9%</b> ✅</td><td>~1000</td></tr>
+        <tr><td>Hopper-v4</td><td>1121.0 ± 253.0</td><td>3717.5 ± 0.4</td><td><b>30.2%</b> ❌</td><td><b>353</b></td></tr>
+        <tr><td>Walker2d-v4</td><td>1707.5 ± 1464.4</td><td>5383.3 ± 54.2</td><td>31.7% ❌</td><td>394</td></tr>
+      </table>
+      <h3>DAgger 曲线</h3>
+      <p>Hopper:1121 → 1247 → 3632 →(震荡)→ <b>3725.3 ± 2.8</b>——两轮从 30% 拉到 98%,
+        最终追平专家且方差更小。读法:看起点到平台的抬升,不看逐轮单调(移动靶注入新数据,回落是正常波动)。
+        Ant:BC 已 97.9%,DAgger 贴专家线小幅波动——验证了"DAgger 的收益 ∝ BC 的分布失配程度"。</p>
+      <figure><img src="../assets/images/hw1/figure1_bc_sweep.png" alt="BC 数据量/步数扫描">
+        <figcaption>步数扫描(Ant):200 步 81 → 1000 步 4586 → 5000 步 4640(平台)。
+          BC 的瓶颈在<b>数据覆盖</b>而非优化步数——为 DAgger 的价值埋下伏笔。</figcaption></figure>
+      <figure><img src="../assets/images/hw1/figure2_dagger_hopper.png" alt="DAgger Hopper 迭代曲线">
+        <figcaption>DAgger 在 Hopper 上逐轮爬升至追平专家。</figcaption></figure>
+      <h3>把分布画出来:概念图五联</h3>
+      <figure><img src="../assets/images/hw1/concept4_occupancy.png" alt="占有测度">
+        <figcaption>证据链:同点出发(图1 初始分布)→ 轨迹束散开(图2)→ 逐时漂移(图3 边际直方图)→
+          一生待的地方不同(图4 占有测度:专家是紧致极限环,BC 是伸向死亡线的云,DAgger 回到环上)→ 物理摔倒(图5 实拍帧)。</figcaption></figure>
+      <div class="fail"><b>翻车展品:那次"优化器小聪明"对照实验。</b>
+        设计:forward 出均值算 MSE,按 loss 大小切两档学习率。结果 Ant 745.9、Hopper 107.8,全面溃败。
+        三条教训:① 两档 lr 都低于基线,实质是全面变慢(欠拟合),Adam 本来就逐参数自适应;
+        ② BC 的痛点不在优化层;③ 一次只变一个变量才能归因——我把 MSE/NLL 和 lr 方案混在一起变,是设计失误。</div>
+      <div class="vgrid">
+        <div class="vcard">
+          <video controls loop muted playsinline preload="metadata" src="../assets/videos/ant_bc_own.mp4"></video>
+          <h3>Ant · BC(自训):4672 / 4790</h3>
+          <p>稳定形态下 BC 一次到位 ≈ 专家水平。</p>
+        </div>
+        <div class="vcard">
+          <video controls loop muted playsinline preload="metadata" src="../assets/videos/hopper_dagger_own.mp4"></video>
+          <h3>Hopper · DAgger 第 10 轮(自训):3708 / 3710</h3>
+          <p>同一环境 BC 仅 30%,分布对齐后追平专家。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="t-code">
+      <h2>⑥ 代码实现</h2>
+      <h3>文件地图</h3>
+<pre>hw1/cs285/
+├── scripts/run_hw1.py        主循环:建环境→建策略→加载专家→[收数据→训练→评估]×n_iter
+├── policies/MLP_policy.py    策略网络:forward / get_action / update(三角分工)
+├── policies/loaded_gaussian_policy.py  专家加载器(只读的"改卷老师")
+├── expert_data/*.pkl         专家演示(4 环境,各 2 条轨迹×1000 步)
+└── infrastructure/           replay_buffer(双表示容器)、utils(rollout)、logger</pre>
+      <h3>数据的一生</h3>
+<pre>transition 五元组 (s,a,r,s′,done)
+  → path 字典 {observation, action, reward, next_observation, terminal}(注意 next_obs[t] = obs[t+1],错位一位)
+  → 数据集 list[path](pkl)
+  → replay buffer 拍扁成大数组(为随机抽批)
+  → 训练批次 obs (B,ob_dim) + act (B,ac_dim)
+HW1 只用 obs+action 两列;reward 仅评估用,next_obs/terminal 留给第 2、3 讲。</pre>
+      <h3>forward / update / get_action 三角</h3>
+      <table>
+        <tr><th>函数</th><th>干什么</th><th>关键</th></tr>
+        <tr><td><code>forward(obs)</code></td><td>纯函数,可微,产出当前预测</td><td>不改任何东西</td></tr>
+        <tr><td><code>update(obs, actions)</code></td><td>调 forward 拿预测,与专家动作算 loss,backward+step</td><td>唯一更新的是网络权重 θ</td></tr>
+        <tr><td><code>get_action(obs)</code></td><td>交互接口:单个观测进,采样,单个动作出</td><td>面向"活"的环境;update 面向存储的批次</td></tr>
+      </table>
+      <p>梯度为什么对 μ 求不对 a 求:a 是常量数据,优化的落点永远是我们能控制的 θ(链:loss→μ→θ)。
+        为什么 loss 不能直接写 μ−a:带符号差会正负抵消,必须先消符号(平方/概率化)。</p>
+      <h3>均值张量 vs 分布对象(forward 的两种返回)</h3>
+      <p>返回均值张量只能配 MSE(σ 恒为 1);返回 <code>Normal(μ,σ)</code> 分布对象才有概率语义:
+        NLL、采样、以及第 2 讲的 log π、第 3 讲的 rsample/entropy 全都建立在它上面——
+        这是贯穿三讲的同一个小设计。</p>
+      <h3>DAgger 的代码视角</h3>
+      <p>run_hw1.py 每轮的分叉只有一处:itr 0 读专家 pkl(BC 热身);itr&gt;0 用当前 actor 采样轨迹,
+        再逐条 <code>path["action"] = expert_policy.get_action(path["observation"])</code> 重标。
+        训练块完全复用——它不关心 buffer 里的数据来自谁。</p>
+    </div>
+
+    <div class="tab-panel" id="t-quiz">
+      <h2>⑦ 自测</h2>
+      <details><summary>Q1:为什么"收集更多专家数据"救不了 Hopper 的 BC?</summary>
+        <p>新数据仍来自专家的占有测度,分布偏移本身没变,学习者踩到的状态依旧超纲。
+          要修的是"数据从哪来",不是"数据有多少"——步数扫描的平台期也是同一个证据。</p></details>
+      <details><summary>Q2:DAgger 的老数据为什么永远有效?</summary>
+        <p>状态是物理事实,标签是专家函数的值——二者都不随策略版本过期。
+          若标签是旧策略自己的动作,老数据才有毒(模仿过去更差的自己)。
+          聚合还带来覆盖并集(历代策略访问状态之和 ⊇ 当前分布)与防遗忘两重好处。</p></details>
+      <details><summary>Q3:占有测度在第 3 讲的 replay buffer 里以什么形式回来?</summary>
+        <p>buffer 是"历代策略占有测度的混合",滞后于当前策略——新策略刚到达的区域样本稀薄,
+          Q 在那里只能外推。所以 off-policy 也得持续付"探索预算"(ε-greedy / 熵)维持覆盖。</p></details>
+    </div>
+  </div>
+
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

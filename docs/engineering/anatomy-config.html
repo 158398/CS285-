@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工程解剖 · 配置系统 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="../index.html#engineering">工程解剖</a><a href="anatomy-dqn.html">DQN 解剖</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">工程解剖 4</span>
+    <h1>配置系统:一个 yaml 怎么<em>变成训练</em></h1>
+    <p><code>cartpole.yaml</code> 只有四行字,但敲下回车后,网络、优化器、探索调度、日志目录全部就位。
+      中间这条流水线,是这套代码最值得学的工程习惯。</p>
+  </section>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>流水线:四步到位</h2>
+<pre>cartpole.yaml ──①──> make_config(scripting_utils.py)
+   读 yaml,取出 base_config: dqn_basic,剩下的键原样传下去
+        │
+        ▼
+configs 注册表(env_configs/__init__.py)
+   "dqn_basic" → basic_dqn_config(env_name, **yaml里剩下的键)
+        │
+        ▼
+配置工厂(env_configs/dqn_basic_config.py)
+   现场组装出一整包东西:
+     make_env        怎么建环境(含 wrapper)
+     make_critic     怎么建 Q 网络(延迟到知道观测/动作维度才建)
+     make_optimizer  怎么建优化器
+     exploration_schedule  ε 的分段退火曲线
+     log_name        日志目录名(把关键超参写进名字里)
+        │
+        ▼
+run 脚本 ──④──> 拿配置包开跑
+   env = config["make_env"]()
+   agent = DQNAgent(env.observation_space.shape, env.action_space.n, **config["agent_kwargs"])</pre>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>两个关键设计</h2>
+    <h3>工厂函数:为什么不直接建网络</h3>
+    <p>配置里写的不是网络,而是 <code>make_critic</code> 这种"建网络的说明书"。
+      因为写 yaml 时还不知道观测空间和动作数——那要等环境建出来才知道。
+      工厂函数把"建网络"推迟到信息齐全的那一刻。<b>配置描述"怎么建",代码决定"何时建"。</b></p>
+    <h3>分段调度器:ε 和 lr 的时间表</h3>
+    <p><code>PiecewiseSchedule([(0, 1.0), (30000, 0.02)], outside_value=0.02)</code> 的意思:
+      第 0 步 ε=1.0(纯乱动),线性退火到第 3 万步的 0.02,之后固定。
+      同一张表也用来给学习率排期(Atari 里前 2 万步 lr 不动、后半程减半)。
+      探索和利用的配比,就是一张分段折线。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>一个完整例子</h2>
+<pre># cartpole.yaml(全文就这些)
+base_config: dqn_basic      # 用哪套配置工厂
+env_name: CartPole-v1       # 环境
+target_update_period: 1000  # 每 1000 步换一次靶
+
+# 想加 double Q?加一行:
+use_double_q: true</pre>
+    <p>想在 Atari 上跑?换 <code>base_config: dqn_atari</code>——同一个 agent、同一份 run 脚本,
+      只是工厂这次会组装出 CNN 和 Atari wrapper。<b>算法不变,配置换血</b>,这就是这套骨架的价值。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>两个 starter 小怪癖(不是你的 bug,别修)</h2>
+    <ol>
+      <li><code>sac_config.py</code> 把 actor 和 critic 的优化器工厂写反了——但两个都是 Adam、lr 都是 3e-4,功能完全等价。</li>
+      <li><code>run_hw3_sac.py</code> 有一行 <code>batch_size = config["batch_size"] or batch_size</code>,右边引用了不存在的变量——
+        但 config 里永远有 batch_size,后半截永远不会被执行,所以永远不炸。</li>
+    </ol>
+    <p>留着它们,是为了提醒你:读别人代码时,不是所有"看着像 bug"的东西都是 bug——先验证它会不会真的触发。</p>
+  </div>
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

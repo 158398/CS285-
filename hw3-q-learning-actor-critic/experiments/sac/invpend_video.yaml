@@ -1,0 +1,6 @@
+base_config: sac
+env_name: InvertedPendulum-v4
+exp_name: invpend_video
+actor_gradient_type: reparametrize
+total_steps: 150000
+target_update_period: 1000

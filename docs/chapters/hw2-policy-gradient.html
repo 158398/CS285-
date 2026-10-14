@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 2 讲 · 策略梯度:方差控制 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="hw1-imitation.html">第 1 讲</a><a href="hw3-q-learning.html">第 3 讲</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">第 2 讲 · 误差观:方差控制</span>
+    <h1>策略梯度:<em>rollout 只有一把,信息怎么榨干</em></h1>
+    <p>REINFORCE 的期望精确,但真正的问题是:rollout 昂贵、且训练时的测度不可能覆盖所有要处理的区间。
+      reward-to-go、baseline、GAE,就是在这种约束下提高每条 rollout 信息效率的技术族。</p>
+  </section>
+
+  <div data-tabs>
+    <div class="tabbar">
+      <button class="tab-btn active" data-tab="t-problem">① 问题与任务</button>
+      <button class="tab-btn" data-tab="t-algo">② 算法</button>
+      <button class="tab-btn" data-tab="t-problems">③ 算法设计时遇到的问题</button>
+      <button class="tab-btn" data-tab="t-confusions">④ 卡壳点</button>
+      <button class="tab-btn" data-tab="t-engineering">⑤ 工程落地</button>
+      <button class="tab-btn" data-tab="t-code">⑥ 代码实现</button>
+      <button class="tab-btn" data-tab="t-quiz">⑦ 自测</button>
+    </div>
+
+    <div class="tab-panel active" id="t-problem">
+      <h2>① 问题与任务:rollout 对学习效率的影响</h2>
+      <p>HW1 有专家,HW2 把专家也撤了:没有演示数据,环境只给奖励。
+        目标变成直接优化 J(θ) = E_τ[R(τ)]——策略梯度方法。它的全部信息来源只有一个:
+        <b>当前策略在环境里滚出来的轨迹(rollout)</b>。于是两个结构性问题摆在面前:</p>
+      <ol>
+        <li><b>rollout 很贵,信息必须榨干。</b>一条 1000 步的轨迹,朴素用法是把"总回报"这一个数
+          乘到每一步的 log π 上——1000 个动作共享一个评价,其中绝大多数配对都是噪声。
+          同一条轨迹里,哪些配对有信息(因果)、哪些状态天然占优(混淆)、多远的未来该算进信用(horizon),
+          直接决定学习效率。rtg、baseline、GAE 就是分别回答这三个问题的技术。</li>
+        <li><b>训练时的测度不可能覆盖所有要处理的区间。</b>数据来自当前策略的占有测度——
+          它只能覆盖"当前策略愿意去的地方",而策略还没学会的广阔区域它永远到不了。
+          这带来两个后果:梯度估计必须 on-policy(数据用一次就扔,复用旧分布的数据要做 IS 修正,
+          而 IS 方差随 horizon 指数爆炸);探索必须靠分布本身的随机性维持。</li>
+      </ol>
+      <p>所以本讲的主线<b>不是</b>"优化估计器里的标量权重"——那只是技术落到公式上的统一形式;
+        主线是:<b>在 rollout 贵且覆盖不全的约束下,怎么设计权重,让每条 rollout 的有效信息最大、噪声最小。</b></p>
+      <div class="note"><b>官方文档(hw2.pdf)写了什么:</b>五个实验 + 一组理论——
+        §4 CartPole 的 rtg × normalize × batch 2×2×2 全组合(考方差);
+        §5 HalfCheetah 的神经网络 baseline 与消融(故意不开 na,暴露 baseline 的真实贡献);
+        §6 LunarLander 的 GAE λ 扫描(考偏差-方差权衡);§7 InvertedPendulum 调参(考样本效率);
+        §9 两状态 MDP 解析推导(梯度一致性、方差闭式、IS 爆炸——本讲的理论钥匙)。</div>
+    </div>
+
+    <div class="tab-panel" id="t-algo">
+      <h2>② 算法:REINFORCE,从"没法求导"到"夸与骂"</h2>
+      <h3>起点:目标只有一句话——平均分最高</h3>
+      <pre>J(θ) = E_τ~p_θ(τ) [ R(τ) ]      让"这局游戏的总分"的期望尽量大</pre>
+      <table>
+        <tr><th>符号</th><th>通俗含义</th></tr>
+        <tr><td>J(θ)</td><td>目标:策略 θ 的平均分</td></tr>
+        <tr><td>τ(tau)</td><td>一局游戏:一整条轨迹(状态、动作、奖励的序列)</td></tr>
+        <tr><td>p_θ(τ)</td><td>这局游戏出现的概率——同时取决于物理规则和你的策略</td></tr>
+        <tr><td>R(τ)</td><td>这局游戏的总回报</td></tr>
+      </table>
+
+      <h3>麻烦:平均的这个分布里,就含着你要求导的 θ</h3>
+      <p>普通期望求导(比如对 f(x) 取平均)可以把导数直接搬进去。但这里 p_θ(τ) 本身随 θ 变:
+        你拧一下策略,<b>未来遇到的游戏都跟着变</b>。直接对 E 求导,找不到出路。</p>
+
+      <h3>出路:一个恒等式,把"梯度"换成"另一个期望"</h3>
+      <p>恒等式 ∇p = p · ∇log p(对数求导的链式法则,就一行)。代入:</p>
+      <pre>∇J = ∇ Σ_τ R(τ)·p_θ(τ)
+    = Σ_τ R(τ)·p_θ(τ)·∇log p_θ(τ)
+    = E_τ [ R(τ) · ∇log p_θ(τ) ]</pre>
+      <p>意思:不用管分布怎么变,只要在每局游戏里问一句"这局概率对 θ 的变化率是多少",再拿总分加权平均。</p>
+
+      <h3>关键一步:物理规则全部消失(model-free 的诞生)</h3>
+      <pre>log p_θ(τ) = log p(s₀) + Σ_t [ log π_θ(a_t|s_t) + log p(s_{t+1}|s_t,a_t) ]
+对 θ 求导:  log p(s₀) 和 log p(s_{t+1}|s_t,a_t) 都不含 θ → 全消
+剩下:      ∇J = E_τ [ Σ_t ∇log π_θ(a_t|s_t) · w_t ],  w_t = R(τ)</pre>
+      <p>初始状态和动力学(物理)都不含 θ,求导后干干净净——
+        <b>我们不需要知道世界的物理模型,也能算策略梯度</b>。
+        这就是 model-free 的来源,也是 RL 能用在物理未知环境里的根基。</p>
+
+      <h3>符号与直觉:∇log π 是"夸与骂"的旋钮</h3>
+      <table>
+        <tr><th>符号</th><th>通俗含义</th></tr>
+        <tr><td>∇log π_θ(a|s)</td><td>"让动作 a 更可能发生"的参数方向(score function)</td></tr>
+        <tr><td>w_t</td><td>这一步/这局的评价:正数夸(概率调大),负数骂(概率调小)</td></tr>
+        <tr><td>E ≈ (1/N)Σ_i</td><td>期望算不动就采样:滚 N 局取平均(蒙特卡洛)</td></tr>
+      </table>
+      <p>注意一个计算细节:梯度<b>不通过采样传</b>。动作已经采好(是数据、是常数),
+        被求导的是"这个动作在当前参数下的对数概率"——所以离散动作(Categorical)和连续动作(高斯)
+        用同一套公式都能算。log π 的三重身份:数学上是 score function;计算上是挂在采样动作上的可微旋钮;
+        工程上它是 PG 同时兼容离散与连续的原因。</p>
+
+      <h3>数学原理:那个让后面一切技术免费的引理</h3>
+      <pre>E_{a~π}[ ∇log π(a|s) ] = Σ_a π(a|s)·∇log π(a|s) = Σ_a ∇π(a|s) = ∇ Σ_a π(a|s) = ∇1 = 0</pre>
+      <p>score function 的期望恒为 0。含义:给权重加/减任何"只依赖状态、不依赖动作"的量,梯度的期望不变。
+        reward-to-go(删掉与动作无关的过去奖励)和 baseline(减掉 V(s))——
+        ③ 的两件主力工具,合法性全在这两行里。</p>
+
+      <h3>结果:你得到了什么</h3>
+      <p>一个<b>无偏</b>的梯度估计器:平均很多次之后,它指向让 J 变大的方向。
+        但"平均对"不等于"每次对"——单次估计的噪声可以极大。
+        这正是 ③ 要治的病,也是本讲主题"方差控制"的由来。</p>
+
+      <h3>补一张对照表:和 HW1 的数据流比着看(理解整个 RL 的钥匙)</h3>
+      <table>
+        <tr><th></th><th>BC(HW1)</th><th>REINFORCE(HW2)</th></tr>
+        <tr><td>状态 s</td><td>专家轨迹,离线固定</td><td>当前策略 rollout,每轮重采(占有测度 d^π)</td></tr>
+        <tr><td>动作 a</td><td>专家动作(外部标签)</td><td>自己采样(自标签)</td></tr>
+        <tr><td>权重 w</td><td>恒为 1</td><td>回报/优势(可正可负)</td></tr>
+        <tr><td>数据复用</td><td>随便复用(专家分布不变)</td><td>用一次就扔(分布随 θ 变)</td></tr>
+      </table>
+      <p>每个 iteration = 一次部署(采样)+ 一次监督式更新 + 数据丢弃——
+        训练那一步在数学上和 BC 几乎同构,变的只是数据来源与权重来源。
+        权重可负是关键区别:advantage &lt; 0 的动作被往下压,PG 同时包含"模仿好行为"和"反模仿坏行为"。</p>
+    </div>
+
+    <div class="tab-panel" id="t-problems">
+      <h2>③ 算法设计时遇到的问题:四件工具,各治一种 rollout 病</h2>
+      <h3>病 1:动作与"它发生之前"的奖励配对 —— reward-to-go(删因果噪声)</h3>
+      <p>把估计器展开成 T×T 配对矩阵 Σ_t Σ_{t'} ∇logπ(a_t) · γ^{t'} r_{t'}。
+        严格下三角(t'&lt;t)是"动作与它无法影响的过去奖励"的配对——给定历史,这些项的条件期望为零,
+        是纯噪声,删除是免费午餐(T 步删 T(T−1)/2 项)。保留上三角:动作能影响的未来。
+        代码含义:q_values 必须<b>按轨迹倒序累加</b>,不能全局拍平后再算。</p>
+      <h3>病 2:好状态里的普通动作被误夸 —— baseline(去状态混淆)</h3>
+      <p>两条轨迹经过同一个好状态,Q̂ 都高:是"状态好"还是"动作好"?
+        减一个只依赖状态的 b(s):零均值性质保证期望不变,可证最优 b ≈ V^π(s)。
+        于是 A = Q̂ − V̂,V̂ 用神经网络对同一批 rollout 的 MC 回报做 MSE 回归
+        (最小二乘平稳点正是条件均值:喂单样本,收敛到期望)。
+        附带好处:全正奖励环境里,减 V 后坏动作真正被压下去(中心化)。</p>
+      <h3>病 3:信用该分配给多远的未来 —— GAE(horizon 旋钮)</h3>
+      <pre>δ_t = r_t + γ·V̂(s_{t+1}) − V̂(s_t)          (TD 残差)
+Â^GAE(λ) = Σ_{l≥0} (γλ)^l · δ_{t+l}          (指数加权)</pre>
+      <p>λ=1:级数望远镜坍缩成 rtg − V̂(MC 版,无偏、方差最大);
+        λ=0:只剩一步 TD(方差最小,偏差 = V̂ 的拟合误差);中间值在"样本噪声"与"模型偏差"间几何插值。
+        这就是"信样本还是信网络"的旋钮——rollout 越贵、环境越难,越需要往 bootstrap 侧挪,
+        用一点偏差换方差。代码是 flat 数组上的后向递归,<b>terminals 遮罩跨轨迹 bootstrap</b>。</p>
+      <h3>病 4:回报尺度跨环境乱跳 —— advantage normalization(稳定步长)</h3>
+      <p>对当前 batch 做一次仿射变换(减均值除标准差):梯度有效步长与回报绝对尺度脱钩,
+        超参跨环境可迁移;对全正奖励环境,减均值 ≈ 免费的 baseline 中心化。
+        严格说它偏离"无偏"(数值性,非结构性),实践中几乎总是开。</p>
+      <h3>背景约束:on-policy 为什么用一次就扔</h3>
+      <p>∇J 是对<b>当前</b> p_θ 取的期望;一次 Adam 后占有测度已变,旧数据对新梯度有偏。
+        想复用就得 IS 修正,而 IS 比率是逐步比率连乘,<b>方差随 horizon 指数爆炸</b>(§9.4 定量证明:
+        稀有成功样本必须取天文数字补均值,有效样本量坍缩)。重新采样是用样本效率换"无偏+方差可控"的理性选择。
+        对照 HW1:专家分布永远不变,所以随便复用——<b>分布是否随 θ 变化,是离线/在线的分水岭</b>。
+        第 3 讲的 replay buffer 走另一条路:不做 IS,用 bootstrap 容忍分布失配。</p>
+      <h3>估计器合法性三关(以后设计任何新估计器都过一遍)</h3>
+      <ol>
+        <li><b>数学关:无偏</b> E[ĝ] = ∇J(score trick 给出,rtg/baseline 靠零均值性质保持);</li>
+        <li><b>分布关:期望对正确的分布取</b>(on-policy,或旧分布 + IS 修正);</li>
+        <li><b>工程关:方差有限且可控</b>(无偏但方差爆炸,实践上等于没用——蒙特卡洛误差 ∝ σ/√N)。</li>
+      </ol>
+    </div>
+
+    <div class="tab-panel" id="t-confusions">
+      <h2>④ 卡壳点(我当年卡住的三个)</h2>
+      <div class="qa"><b>卡壳点 1:REINFORCE 无偏,为什么还会失败?</b><br>
+        "无偏"只保证<b>平均很多次之后方向对</b>,不保证单次不把你带沟里。
+        长轨迹(1000 步奖励求和)+ 同号奖励(全正/全负)时,单次估计的噪声可以大到覆盖信号。
+        实测:HalfCheetah 上同一个无偏估计器,加不加 baseline 是 −140 和 347 的差别;
+        vanilla 直接发散到 −38,033。无偏只保证"方向对",不保证"走得稳"。</div>
+      <div class="qa"><b>卡壳点 2:baseline 不改变期望,为什么有用?</b><br>
+        因为 E[∇logπ·b(s)] = 0(任何只依赖状态的量都被 score 的零均值吃掉)。
+        所以减 baseline 不动方向,<b>只削方差</b>:把"这个状态本来就好"和"这个动作真的好"分开。
+        而且它是全系统最宽容的组件——学差了只是降方差打折,不带偏梯度(对比第 3 讲:Q 错直接影响策略,严重得多)。</div>
+      <div class="qa"><b>卡壳点 3:GAE 的 λ 到底在拧什么?</b><br>
+        "信样本还是信网络"的旋钮:λ=1 全部由采样回报算(无偏但吵),λ=0 全部由价值网络垫付(安静但有偏)。
+        我扫了五个值:最佳 0.99(180 分达标)——留一点 bootstrap 降噪,主干仍是 MC;
+        λ→0 那头被 V̂ 的 bootstrap 误差主导,在稀疏终局奖励(±100)的 LunarLander 上学不动;
+        中间值最早触线却后期塌陷("方差与偏差都没压好"的最差组合)。</div>
+    </div>
+
+    <div class="tab-panel" id="t-engineering">
+      <h2>⑤ 工程落地:实验、数据与翻车</h2>
+      <h3>§4 CartPole 2×2×2:哪件工具在什么预算下有效</h3>
+      <table>
+        <tr><th>配置</th><th>小批量(b=1000)末10轮</th><th>大批量(b=4000)末10轮</th></tr>
+        <tr><td>vanilla</td><td>129.6</td><td><b>200</b></td></tr>
+        <tr><td>rtg</td><td>191.8</td><td><b>200</b></td></tr>
+        <tr><td>na</td><td><b>200.0</b></td><td><b>200</b></td></tr>
+        <tr><td>rtg+na</td><td>182.7</td><td><b>200</b></td></tr>
+      </table>
+      <p>三个结论:① 无 na 时 rtg 显著更好(192 vs 130,§9.3 解析结论的实践版);
+        ② na 单独即满分(稳定步长 + 全正奖励下附带中心化);
+        ③ <b>大批量四配置全满分</b>——连最粗糙的 vanilla 也被样本量救活(蒙特卡洛误差 ∝ σ/√N),
+        这是"方差决定成败"的最直白证据。代价:大 batch 每次更新吃 4 倍样本——大 batch 买稳定性,小 batch 买样本效率。</p>
+      <figure><img src="../assets/images/hw2/fig_cartpole_sb.png" alt="CartPole 小批量四配置"></figure>
+      <h3>§5 HalfCheetah:baseline −140 → 347</h3>
+      <p>同一个估计器,只加神经网络 baseline:末 10 轮从 −140.4 到 <b>346.9</b>(达标线 300);
+        削弱 critic 训练(bgs 5→1)后只有 45.9——critic 拟合不足 → 优势残留状态级噪声 → 策略变差。
+        官方故意不开 na:na 太强,会让 baseline 在简单环境里显得没必要——关掉它才能暴露 baseline 的真实贡献。</p>
+      <figure><img src="../assets/images/hw2/fig_cheetah_return.png" alt="HalfCheetah baseline"></figure>
+      <h3>§6 LunarLander:GAE λ 扫描</h3>
+      <table>
+        <tr><th>λ</th><th>0</th><th>0.95</th><th>0.98</th><th>0.99</th><th>1</th></tr>
+        <tr><td>末20轮</td><td>−69</td><td>−69</td><td>2.5</td><td><b>179.8</b></td><td>148</td></tr>
+      </table>
+      <figure><img src="../assets/images/hw2/fig_lunarlander.png" alt="GAE λ 扫描"></figure>
+      <h3>自选 24 配置矩阵(6 估计器 × 4 环境):四个最大收获</h3>
+      <figure><img src="../assets/images/hw2/fig_mx_heatmap.png" alt="24 配置热力图"></figure>
+      <ol>
+        <li><b>Cheetah 上 vanilla 和 na-only 都发散了</b>(−38033 / −9902,不是没学会,是崩了):
+          T² 配对噪声 + 同号巨额回报把高斯头冲垮;中心化救不了配对噪声。
+          <b>长 horizon 连续环境:rtg 是防爆底线,中心化是能学的前提,缺一不可</b>;全栈 GAE 给最高峰值(420/604)。</li>
+        <li><b>LunarLander 同估计器混沌分岔</b>:+baseline(Q̂−V̂)与 λ=1 GAE 数学上是同一个估计器,
+          却跑出 −42 vs 148——同算法同种子,仅浮点求值顺序不同。"单 seed 不可信"的活标本。</li>
+        <li><b>Pendulum 的"摸到 ≠ 稳住"</b>:rtg/bl/rtg_na 峰值都摸到过 1000,末段均值却只有 249~650;
+          只有 GAE(1000,σ=0)和 na(978)稳住。<b>评价要看末段均值+σ,峰值是自欺指标</b>。</li>
+        <li><b>没有全能单件,但全栈永远前二</b>:na 是全正奖励环境的最强单件(≈免费 baseline);
+          rtg+baseline+GAE 四环境全进前两名——现代 PG 实现默认全开的理由。</li>
+      </ol>
+      <div class="fail"><b>理论 ↔ 实践对照(§9 的四个预测)</b>:
+        9.1 PG 无偏 → 所有配置曲线长期向上 ✓;9.2 方差随问题结构剧变 → vanilla 在 CartPole 慢抖、在 Cheetah 直接发散 ✓;
+        9.3 rtg 同期望更低方差 → §4 无 na 时 rtg 显著更好 ✓;9.4 IS 方差指数爆炸 → on-policy 主循环每轮重采样的设计依据 ✓。
+        玩具模型只应期待<b>定性一致(排序与趋势)</b>,不应期待数值吻合。</div>
+    </div>
+
+    <div class="tab-panel" id="t-code">
+      <h2>⑥ 代码实现</h2>
+      <h3>TODO 文件地图(5 个文件)</h3>
+      <table>
+        <tr><th>文件</th><th>职责</th><th>关键实现点</th></tr>
+        <tr><td><code>scripts/run_hw2.py</code></td><td>主循环</td><td>采样 batch、调 agent.update(注意键名映射 observation→obs)</td></tr>
+        <tr><td><code>infrastructure/utils.py</code></td><td>部署侧 rollout</td><td>get_action → env.step → rollout_done = done or 到达 max_length</td></tr>
+        <tr><td><code>networks/policies.py</code></td><td>策略网络</td><td>forward 两分支(Categorical / Normal)、PG loss:全作业数学上最重要的一行</td></tr>
+        <tr><td><code>networks/critics.py</code></td><td>价值网络</td><td>forward(MLP→squeeze)、update(MSE 回归 q_values)</td></tr>
+        <tr><td><code>agents/pg_agent.py</code></td><td>算法核心</td><td>两个 discounted helper、advantage 三 case + GAE + normalize、actor/critic 更新调用</td></tr>
+      </table>
+      <h3>流水线与形状契约</h3>
+<pre>env ←→ policy.get_action                     (部署)
+轨迹 list of dicts → trajs_dict(dict of lists)   (转置,此时不拍平!)
+→ update(): rewards --按轨迹--> q_values(list)     (_discounted_return / _rtg)
+→ 全部 np.concatenate 拍平(leading dim = ΣT_i)   (此后全部向量化)
+→ advantages = q_values [− V̂ | GAE] [→ normalize]
+→ actor.update(obs, actions, advantages)      loss = −(log_prob·adv).mean()
+→ critic.update × bgs 次(MSE 回归 q_values)</pre>
+      <p><b>唯一不能拍平着算的是 discounted return 和 GAE</b>——前者按轨迹算,后者靠 terminals 遮罩。</p>
+      <h3>实现陷阱清单(都踩过)</h3>
+      <ol>
+        <li>连续动作 <code>log_prob</code> 是 (batch, ac_dim),必须 <code>.sum(-1)</code> 再乘 advantages(对角高斯逐维出对数密度,联合 = 各维相加,漏了会 broadcasting 出错)。</li>
+        <li>normalize 分母加 1e-8 防除零。</li>
+        <li>terminals 合并了真终止与时间截断(本作业无害的简化;第 3 讲必须区分,那是 done 遮罩的坑)。</li>
+        <li><b>Actor Loss 的值不能用来判断学习好坏</b>(加权对数似然,权重和分布每轮都变)——评估只看 Eval_AverageReturn。</li>
+      </ol>
+      <h3>离散 vs 连续:算法零差异,代码三处</h3>
+      <p>① forward 构造哪个分布(Categorical vs Normal);② 连续 log_prob 要 sum(-1);
+        ③ get_action 产物类型(int vs float 向量)。PG 定理对任何可微参数化分布成立——
+        就像同一骨干网络接 softmax 分类头还是高斯回归头。</p>
+    </div>
+
+    <div class="tab-panel" id="t-quiz">
+      <h2>⑦ 自测</h2>
+      <details><summary>Q1:baseline 会不会让梯度期望有偏?</summary>
+        <p>不会。E[∇logπ·b(s)] = b(s)·E[∇logπ] = 0。baseline 只削方差,不动方向。</p></details>
+      <details><summary>Q2:为什么 GAE λ=1 时退化为"rtg 减 baseline"?</summary>
+        <p>把 A_t = Σ(γλ)^l δ_{t+l} 在 λ=1 展开,δ 级数望远镜坍缩,中间项全消,
+          只剩 Σγ^l r_{t+l} − V̂(s_t) = Q̂_rtg − V̂。λ 的几何加权就是在这两个端点之间插值。</p></details>
+      <details><summary>Q3:为什么 on-policy 的数据必须即用即扔?</summary>
+        <p>策略梯度是"当前策略占有测度下"的期望。数据一旧,估计的就是旧目标函数的梯度——
+          要复用必须做重要性采样修正,而 IS 方差随轨迹长度指数爆炸(§9.4)。
+          第 3 讲的 replay buffer 能绕开它,靠的是换成 bootstrap 估计(用偏差换方差)。</p></details>
+    </div>
+  </div>
+
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

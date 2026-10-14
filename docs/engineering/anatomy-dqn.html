@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工程解剖 · DQN 数据流 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="../index.html#engineering">工程解剖</a><a href="../chapters/hw3-q-learning.html">第 3 讲</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">工程解剖 1</span>
+    <h1>DQN:一步数据<em>怎么流</em></h1>
+    <p>看完这页,你应能回答:训练的每一秒里,数据从环境流进网络,梯度从网络流回参数,
+      中途经过了谁的手,每个环节各管什么。</p>
+  </section>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>一图看全:主循环的每一步</h2>
+    <p>训练就是一个大循环,每一圈做三件事:<b>玩一步、存一条、学一把</b>。对应到代码:</p>
+<pre>每个环境步(run_hw3_dqn.py):
+  ① 玩:按调度表取 ε → agent.get_action(观测, ε)
+        大部分时间选 Q 最大的动作(argmax),ε 概率乱动(探索)
+  ② 存:env.step(动作) → (新观测, 奖励, done, info)
+        done_td = done 且不是"时间到"(TimeLimit 截断不算真结束)
+        replay_buffer.insert(...)
+  ③ 学:步数够 20000 后,每步都学:
+        batch = buffer.sample(128 条旧经验)
+        agent.update(batch):
+          ├─ update_critic:算靶子 → 回归 → 梯度下降
+          └─ 每 1000 步:把 target 网络刷新成当前网络(换靶)
+  每 10000 步:用几乎不贪玩的策略(ε=0.02)跑 10 局,记下 eval_return</pre>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>三个函数,三种职责</h2>
+    <table>
+      <tr><th>函数</th><th>只管什么</th><th>对应的坑</th></tr>
+      <tr><td><code>get_action</code></td><td>玩:ε-greedy 选动作</td><td>ε 归零太早 → 新区域没人探索,Q 在那里永远不准</td></tr>
+      <tr><td><code>update_critic</code></td><td>学:算靶子、做回归</td><td>靶子写错(见下面三个坑)→ 全盘皆输</td></tr>
+      <tr><td><code>update</code></td><td>编排:每步学 + 定期换靶</td><td>换靶太勤 → 靶子会躲;不换 → 靶子过时</td></tr>
+    </table>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>update_critic 的三个坑(作业里全有人踩过)</h2>
+    <h3>坑 1:done 没抠掉"时间到"</h3>
+    <p>靶子是 <code>r + γ(1−done)·max Q(下一状态)</code>。如果一局是"时间到"被掐断的(TimeLimit 截断),
+      游戏其实没结束,下一状态还有未来——这时把 done 当 1,bootstrap 被一刀切掉,靶子系统性偏小。
+      <b>正确做法:done = 真结束(死了/成功了),截断单独记。</b></p>
+    <h3>坑 2:对哪一列 Q 做回归</h3>
+    <p>网络一次输出所有动作的分(比如 4 个),但这一条经验里只有"实际执行过的那个动作"见过真奖励。
+      所以只回归那一列:<code>qa_values.gather(1, action)</code>。其余三列这一步不许动——它们没有新信息。</p>
+    <h3>坑 3:double Q 的"选"与"评"用反了</h3>
+    <p>double Q 是用<b>在线网络选</b>动作(它最新,决定行为),用<b>冻结的 target 网络评</b>分(它稳,当靶子)。
+      用反了等于没做。"选"和"评"分家,max 才不会专挑被高估的噪声。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>张量形状:跟着数字走一遍</h2>
+<pre>低维(CartPole, batch=128, 4 个动作):
+  观测 (128, 4) → MLP(64×64) → Q 值 (128, 4)
+  gather 选执行过的动作 → (128,) ;靶子 (128,) ;MSE 逐元素
+
+图像(MsPacman, batch=32, 9 个动作):
+  观测 (32, 4, 84, 84) uint8 → /255 变 float
+  → conv 8×8/stride4 → conv 4×4/stride2 → conv 3×3/stride1
+  → 拉平 3136 → 512 → Q 值 (32, 9)</pre>
+    <p>代码里每个关键形状都有 <code>assert</code>——形状错了当场炸,比静默 broadcast 出一个错误矩阵强一百倍。
+      自己写 agent 时照抄这个习惯。</p>
+  </div>
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

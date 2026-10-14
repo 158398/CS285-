@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>专题 · 一个环境的三种死法:LunarLander | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="hw3-q-learning.html">第 3 讲</a><a href="../index.html#stories">故事</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">专题 · 跨作业主线</span>
+    <h1>一个环境的<em>三种死法</em>:LunarLander</h1>
+    <p>同一个登月器,我在三份作业(实际是四次)里,用三种完全不同的算法范式去着陆它:
+      on-policy 策略梯度、off-policy vanilla DQN、double DQN。
+      三次三种结局,第四次最魔幻。这一个环境,就是整部教程误差观的缩影。</p>
+  </section>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>第一次相遇:HW2 策略梯度(方差的故事)</h2>
+    <p>武器:REINFORCE + reward-to-go + baseline + GAE,λ 从 0 扫到 1。
+      结局:<b>λ=0.99 摸到 180 达标线</b>,λ→0(bootstrap 多)学不动,中间 λ 冲高后塌陷。</p>
+    <figure><img src="../assets/images/hw2/fig_lunarlander.png" alt="HW2 GAE λ 扫描">
+      <figcaption>HW2:GAE λ 五条曲线。读法:λ 是偏差-方差旋钮——太靠 MC(λ=1)慢但稳,太靠 TD(λ→0)快但偏。</figcaption></figure>
+    <p>当时的隐藏剧情:<b>同估计器、同种子</b>,仅浮点求值顺序不同,两条 run 就分岔成 −42 和 148。
+      那是我第一次学到:LunarLander 是个混沌环境,单 seed 的定量结论不可信。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>第二次相遇:HW3 vanilla DQN(偏差的故事,悲剧)</h2>
+    <p>武器换成 off-policy 的 DQN: replay buffer + target network + ε-greedy。
+      结局:<b>三个种子全军覆没</b>(末段 −57/−52/−91),全程 max 只有 11–40。
+      其中 2 号种子曾单次摸到 222 分——然后彻底崩盘。</p>
+    <p>死因不是探索不够、不是网络太小,是 <b>max 高估</b>:取 max 时专挑运气好的噪声,
+      Q 在某区域虚高 → 策略慕名而去 → 数据一到,虚高被证伪 → 崩盘。
+      vanilla 的 Q 预测(≈37)比 double Q(≈30)<b>更高</b>,回报却差一个量级——虚高的活捉现场。</p>
+    <div class="fail"><b>行为证据(翻车博物馆展品):</b>vanilla 训练 300k 后的三局连录——悬停、犹豫、栽下去。
+      <figure><video controls loop muted playsinline preload="metadata" style="max-width:420px;border-radius:10px;border:1px solid var(--line)" src="../assets/videos/lunar_vanilla_crash.mp4"></video></figure>
+    </div>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>第三次相遇:double DQN(偏差被按住之后)</h2>
+    <p>只改一处:选动作用在线网络、评分用 target 网络("选"与"评"分家)。
+      结局:三个种子 89/130/59,<b>最优单局 211–277</b>,曲线在 300k 处仍陡峭爬升。</p>
+    <figure><img src="../assets/images/hw3/fig_dqn_lunar.png" alt="LunarLander 红蓝对照">
+      <figcaption>HW3:vanilla(蓝)vs doubleQ(红),3 seeds 均值±std。读法:红线末段斜率仍正——
+        不是到顶了,是 300k 步没走完;蓝线的平台就是高估后的停滞。</figcaption></figure>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>第四次相遇:重跑一遍,世界线又变了(混沌的故事)</h2>
+    <p>为了拍视频,用<b>同样的代码、同样的种子</b>重跑 double DQN。结局:</p>
+    <table>
+      <tr><th>run</th><th>末段均值</th><th>最优单局</th><th>判读</th></tr>
+      <tr><td>HW3 原 seed 1/2/3</td><td>89 / 130 / 59</td><td>216 / 211 / 142</td><td>正向爬升</td></tr>
+      <tr><td>重跑 seed 1</td><td>−53</td><td>10</td><td>几乎没学会</td></tr>
+      <tr><td>重跑 seed 2</td><td>−91</td><td>222</td><td>双峰:偶尔神勇,多数坠毁</td></tr>
+      <tr><td>重跑 seed 3</td><td>−82</td><td>229</td><td>同上</td></tr>
+    </table>
+    <p>同种子结果都不同(CPU 线程调度改变浮点求和顺序 → 微小差异被混沌放大)——
+      HW2 发现的"混沌分岔"在 HW3 原样重演。最后的视频是从 15 局里筛出的 2 局软着陆:</p>
+    <div class="vgrid">
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="../assets/videos/lunar_doubleq_landing.mp4"></video>
+        <h3>double DQN 最佳单局(186/167)</h3>
+        <p>15 局只有 2 局能软着陆——这就是"最优单局 211–277、均值 59–130"的行为级样子</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>一个环境教我的四件事</h2>
+    <ol>
+      <li><b>方差会杀人</b>(HW2):不给 baseline/GAE,无偏估计器照样学不动——λ 旋钮能救一半。</li>
+      <li><b>偏差更会骗人</b>(HW3 vanilla):Q 值虚高时,学习曲线会"看起来在进步"——然后崩盘。要看 Q 的绝对值,不只看回报。</li>
+      <li><b>选评分家是高估的解药</b>(doubleQ):一处改动,从全负到正向爬升。</li>
+      <li><b>混沌环境只看均值会误事</b>(四次重逢):LunarLander 必须多 seed、看单局分布(均值 59 和均值 −82 的 agent,最佳单局都是 220+)。
+        你写论文时报告"mean ± std over seeds",就是因为这种环境存在。</li>
+    </ol>
+    <div class="qa"><b>和教程主线的关系:</b>三讲的误差观——分布偏移(HW1)、方差(HW2)、偏差(HW3)——
+      在这一个环境里全部现身了一遍,外加第四条隐藏款:<b>混沌</b>。这也是为什么我把 LunarLander 叫"一个环境的三种死法":
+      它不是难,它是把每种失败都演示给你看。</div>
+  </div>
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

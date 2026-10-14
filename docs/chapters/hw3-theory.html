@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>理论推导 · Multistep Q-Learning(hw3.pdf §1)| CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',display:true},{left:'$',display:false}]});"></script>
+<style>
+/* Distill 式双栏:正文 ~680px,边注 ~200px 同基线 */
+.theory{max-width:680px;position:relative}
+.mn{float:right;clear:right;width:190px;margin:4px -215px 12px 20px;padding:10px 12px;
+  font-size:12.5px;line-height:1.65;color:var(--sub);border-left:3px solid var(--amber);
+  background:var(--amber-soft);border-radius:0 8px 8px 0}
+.mn b{color:var(--amber-d)}
+.theory h3{margin-top:26px}
+.theory p,.theory li{font-size:15.5px}
+.theory .katex{font-size:1.02em}
+.theory .katex-display{margin:1.3em 0}
+/* 推导步骤条 */
+.deriv{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:16px 18px;margin:16px 0}
+.deriv .step{display:none}
+.deriv .step.active{display:block;animation:fade .25s ease}
+.deriv-nav{display:flex;gap:8px;align-items:center;margin-top:10px}
+.deriv-nav .btn{padding:5px 12px;font-size:13px}
+.step-hint{font-size:13px;color:var(--sub);min-height:1.6em}
+.hl{background:linear-gradient(transparent 62%, var(--amber-soft) 62%);font-weight:700}
+/* 模拟按钮 */
+.simbox{border:1px dashed var(--line);border-radius:12px;padding:14px 16px;margin:14px 0;background:#fbf8ef}
+canvas.sim{width:100%;height:240px;background:#fffdf7;border:1px solid var(--line);border-radius:8px}
+/* You Should Know */
+.ysk{border-left:4px solid #3645c6;background:#f4ecff;padding:10px 16px;margin:14px 0;border-radius:0 10px 10px 0;font-size:14.5px}
+.ysk b{color:#2a37a3}
+@media (max-width:900px){.mn{float:none;width:auto;margin:10px 0}}
+</style>
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="hw3-q-learning.html">第 3 讲</a><a href="../index.html#lab">实验室</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">理论推导 · 与 hw3.pdf §1 逐节对应</span>
+    <h1>Multistep <em>Q-Learning</em>:偏差、方差与重要性采样</h1>
+    <p>本页是作业理论题(hw3.pdf §1 Multistep Q-Learning)的完整伴读:推导逐节对应题号 1.1–1.5,
+      公式编号与 PDF 一致。你将学会:max 算子为什么天生乐观、N-step 旋钮两端的得失、
+      函数逼近让哪些保证失效、以及 off-policy 修正为什么在 N=1 免费、N→∞ 致命。</p>
+  </section>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>§0 题目设定(与 PDF 一致)</h2>
+    <p>N-step Q-learning 的靶子(PDF 式 1):</p>
+    $$y_{j,t} \leftarrow \sum_{t'=t}^{t+N-1} \gamma^{t'-t} r_{j,t'} \;+\; \gamma^{N} \max_{a_{j,t+N}} Q_{\phi_k}(s_{j,t+N}, a_{j,t+N})$$
+    <p>回归拟合(式 2)与策略更新(式 3):</p>
+    $$\phi_{k+1} \leftarrow \arg\min_{\phi \in \Phi} \sum_{j,t} \Big( y_{j,t} - Q_\phi(s_{j,t}, a_{j,t}) \Big)^2,
+    \qquad
+    \pi_{k+1}(a_t \mid s_t) = \mathbb{1}\big[ a_t = \arg\max_{a} Q_{\phi_{k+1}}(s_t, a) \big]$$
+    <div class="mn"><b>读法</b>:j 是 buffer 里轨迹的索引,t 是轨迹内时刻。N=1 时连加只剩 r_{j,t},退化成你熟悉的 Q-learning 靶子;N→∞ 时 bootstrap 项消失,是 Monte Carlo。</div>
+    <p>算法 1 的循环:用 π_k 采 B 条新轨迹更新 buffer → 算靶子(式 1)→ 拟合(式 2)→ argmax 改进(式 3),重复 K 轮。
+    五个小题问的都是同一个东西的不同切面:<b>这个靶子什么时候无偏、什么时候收敛、方差多大、函数逼近后还剩什么、off-policy 怎么修。</b></p>
+  </div>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>§1.1 TD-Learning Bias:B Q̂ 是 BQ 的无偏估计吗?</h2>
+    <div class="mn"><b>Jensen 不等式</b>:f 凸 ⇒ E[f(X)] ≥ f(E[X])。max 对每个分量都是凸函数(一族线性函数的上确界)。</div>
+    <p>设 Q̂ 是对 Q 的无偏噪声估计(逐状态-动作)。Bellman backup 里装着 max:</p>
+    $$\mathbb{E}\big[\max_{a'} \hat{Q}(s',a')\big] \;\ge\; \max_{a'} \mathbb{E}\big[\hat{Q}(s',a')\big] \;=\; \max_{a'} Q(s',a')$$
+    <p>所以即使 Q̂ 逐点无偏,<span class="hl">取 max 这个动作本身就把期望推高</span>——答案是 <b>No</b>:
+    $B\hat{Q} = r + \gamma \max_{a'} \hat{Q}(s',a')$ 不是 $BQ$ 的无偏估计。直觉:max 专挑"运气好的那次噪声"。
+    这是全作业偏差链的第一环(→ double Q 的动机)。</p>
+    <div class="simbox">
+      <b>模拟验证(Seeing-Theory 式)</b>:真值全 0,10 个动作各加 N(0,1) 噪声,看 max 的分布。<button class="btn" id="simBtn">再模拟 2000 次</button>
+      <span id="simStat" style="margin-left:10px;font-weight:800;color:var(--amber-d)"></span>
+      <canvas class="sim" id="simCv" width="680" height="240"></canvas>
+    </div>
+  </div>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>§1.2 Tabular Learning:六个格子怎么判</h2>
+    <p>三个命题:I. Q<sub>φk+1</sub> 是上一策略 Q<sup>πk</sup> 的无偏估计;II. 固定 B、k→∞ 时是 Q* 的无偏估计;
+    III. k,B→∞ 时收敛到 Q*。逐格判据只有三个问题:</p>
+    <ol>
+      <li><b>靶子里是 max 还是 π?</b>——决定 I。靶子恒为 max(最优性算子),从来不是"按 π_k 采样"(评估算子),
+        所以 <span class="hl">I 在六个格子全 False</span>:它估计的是朝 Q* 的贝尔曼最优算子,不是 Q^{πk}。</li>
+      <li><b>固定 B 的极限是什么?</b>——决定 II。固定数据反复拟合 = 在<b>经验 MDP</b> 上做价值迭代,不动点是经验 MDP 的 Q̂*;
+        有限样本 + max 使 E[Q̂*] 对 Q* 保持乐观偏差(§1.1 的同族)。<span class="hl">II 在六个格子全 False</span>。</li>
+      <li><b>收缩性 + 覆盖 + off-policy 修正</b>——决定 III。表格下 backup 是 γ-收缩,覆盖假设满足:</li>
+    </ol>
+    <table>
+      <tr><th>III(收敛到 Q*)</th><th>on-policy</th><th>off-policy</th></tr>
+      <tr><td>N = 1</td><td>✅(Q-learning 经典收敛)</td><td>✅(max 不在乎数据是谁采的)</td></tr>
+      <tr><td>N &gt; 1</td><td>✅(数据来自当前 πk,与靶子自洽)</td><td>❌(多步奖励按 π′ 采,无修正 → 见 §1.5)</td></tr>
+      <tr><td>N → ∞</td><td>✅(MC 评估 + 贪心改进 = 策略迭代)</td><td>❌(需要全轨迹 IS,方差爆炸)</td></tr>
+    </table>
+    <div class="mn"><b>易错</b>:N&gt;1 on-policy 的靶子混着"πk 采的真奖励 + max bootstrap",k→∞ 时随策略改进自洽收敛;
+      一旦 off-policy,多步奖励的分布就错了——修正它的唯一办法是 §1.5 的似然比。</div>
+    <div class="ysk"><b>你该知道:</b>III 的第一行(off-policy 也收敛)就是 replay buffer 合法性的理论出生证;
+    第二行告诉你这张出生证只覆盖 N=1。</div>
+  </div>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>§1.3 Variance of Q Estimate:哪种 N 方差最大/最小?</h2>
+    <p>靶子的随机性有两个来源:真实奖励的采样噪声(随 N 累积)与 bootstrap 项的估计误差(不随 N 变,但有偏)。
+    N 越大,靶子越像 Monte Carlo——无偏但噪声大;N=1 把未来交给 Q̂——偏差换安静:</p>
+    <table>
+      <tr><th></th><th>答案</th><th>理由</th></tr>
+      <tr><td>方差最高</td><td><b>N → ∞</b></td><td>整段未来的奖励全部采样累积,无 bootstrap 降噪</td></tr>
+      <tr><td>方差最低</td><td><b>N = 1</b></td><td>只有一步真实奖励,未来全部由 Q̂ 垫付</td></tr>
+    </table>
+    <div class="mn"><b>与 HW2 的呼应</b>:GAE 的 λ 是同一个旋钮在 advantage 侧的版本(λ=0 全 bootstrap,λ=1 全 MC)。
+    HW2 你拧在偏方差侧,HW3 拧到底(N=1)——两份作业因此一个讲方差、一个讲偏差。</div>
+  </div>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>§1.4 Function Approximation:哪些保证失效了</h2>
+    <div class="mn"><b>收缩性</b>:表格 backup 满足 ‖BQ₁−BQ₂‖∞ ≤ γ‖Q₁−Q₂‖∞,Banach 不动点 ⇒ 收敛。
+    函数逼近的"拟合"是把 BQ 投影到函数类;投影在 L₂ 不扩张、在 ∞-范数可扩张,复合后不再保证收缩。</div>
+    <p>四个命题:① N=1 时是 Q^{πk} 无偏估计;② N=1、B,k→∞ 收敛到 Q*;③ N&gt;1 收敛;④ N→∞ 收敛。
+    假设:对任意确定性 π,函数类能精确表达 Q^π。</p>
+    <ol>
+      <li>① <b>False</b>:max 的偏差不因函数逼近消失,还多一层投影偏差。</li>
+      <li>② <b>False</b>:函数逼近 + bootstrap + off-policy = 死亡三合一,可能发散(连收敛都没有,更谈不上收敛到 Q*)。</li>
+      <li>③ <b>False</b>:同②,有限 N 都带 bootstrap。</li>
+      <li>④ <b>True</b>:N→∞ 时式 (2) 退化为对 on-policy MC 回报的回归;能精确表达 ⇒ 每轮得到精确 Q^{πk},
+        整套算法退化为<b>精确策略迭代</b>,有限 MDP 上收敛到 Q*。</li>
+    </ol>
+    <div class="ysk"><b>你该知道:</b>④ 是这题最漂亮的一格——bootstrap 一拿掉,函数逼近就不再可怕;
+    它精确告诉你"偏差从哪来"。想亲手看这个发散,去 <a href="../lab/deadly-triad.html">实验室的死亡三合一滑块</a>
+    (函数逼近的发散版另有 concept_demos.py 的两状态反例,×1.08/步)。</div>
+  </div>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>§1.5 Multistep Importance Sampling:修正项怎么写</h2>
+    <p>用 π′ 采的轨迹估计"对 π 改进"的 N-step 靶子,需要给未来每一项乘似然比 $\rho_s = \dfrac{\pi(a_s|s_s)}{\pi'(a_s|s_s)}$。
+    逐步推(点上一步/下一步):</p>
+    <div class="deriv" id="deriv">
+      <div class="step active" data-hint="目标:估计策略 π 下,从 (s_t,a_t) 出发的 N 步回报期望。数据来自 π′。">
+        $$\mathbb{E}_{\pi}\Big[ \sum_{t'=t}^{t+N-1} \gamma^{t'-t} r_{t'} + \gamma^N \max_a Q(s_{t+N},a) \,\Big|\, s_t, a_t \Big]$$
+      </div>
+      <div class="step" data-hint="第一步真实奖励 r_t 是已执行动作 (s_t,a_t) 的确定性结果:不含未来动作,无需修正。">
+        $$r_t + \mathbb{E}_{\pi}\Big[ \sum_{t'=t+1}^{t+N-1} \gamma^{t'-t} r_{t'} + \gamma^N \max_a Q(s_{t+N},a) \,\Big|\, s_t, a_t \Big]$$
+      </div>
+      <div class="step" data-hint="t+1 起的动作按 π 采,而数据按 π′ 采:期望换测度,逐时刻补似然比 ρ。">
+        $$r_t + \mathbb{E}_{\pi'}\Big[ \sum_{t'=t+1}^{t+N-1} \Big(\prod_{s=t+1}^{t'} \rho_s\Big) \gamma^{t'-t} r_{t'} + \Big(\prod_{s=t+1}^{t+N-1} \rho_s\Big) \gamma^N \max_a Q(s_{t+N},a) \,\Big]$$
+      </div>
+      <div class="step" data-hint="写成逐样本的修正靶子(式 1 的 off-policy 版):每项奖励配到该时刻为止的连乘。">
+        $$y_{j,t} = r_{j,t} + \sum_{t'=t+1}^{t+N-1} \Big(\prod_{s=t+1}^{t'} \rho_{j,s}\Big) \gamma^{t'-t} r_{j,t'} + \Big(\prod_{s=t+1}^{t+N-1} \rho_{j,s}\Big) \gamma^N \max_a Q_{\phi_k}(s_{j,t+N}, a)$$
+      </div>
+      <div class="step" data-hint="两个端点:N=1 时连乘为空(修正恒等于 1,式 1 原样可用);N→∞ 时退化为全轨迹似然比。">
+        $$N{=}1:\; y_{j,t} = r_{j,t} + \gamma \max_a Q_{\phi_k}(s_{j,t+1},a) \quad(\text{无需修改})$$
+        $$N{\to}\infty:\; \text{权重} = \prod_{s=t+1}^{T} \frac{\pi(a_s|s_s)}{\pi'(a_s|s_s)} \;\Rightarrow\; \text{方差} \sim \text{随 horizon 指数爆炸}$$
+      </div>
+    </div>
+    <div class="deriv-nav">
+      <button class="btn" id="prevStep">← 上一步</button>
+      <button class="btn" id="nextStep">下一步 →</button>
+      <span class="step-hint" id="stepHint"></span>
+    </div>
+    <div class="mn"><b>主线收口</b>:bootstrap 与 IS 是处理 off-policy 的两个端点——截断 horizon(偏差换安静)
+    或全程重加权(无偏换爆炸)。这就是为什么 DQN 敢用 buffer,而 HW2 的 PG 不敢。</div>
+    <div class="ysk"><b>你该知道:</b>方差随 horizon 指数爆炸正是你在 HW2 §9.4 推过的结论;
+    理论题把两份作业在同一个公式里接上了。</div>
+  </div>
+
+  <div class="tab-panel active theory" style="display:block">
+    <h2>自测(合上答案再想一遍)</h2>
+    <details><summary>§1.1 的偏差和 §1.2-II 的偏差是同一个机制吗?</summary>
+      <p>同族不同身。§1.1 是"对无偏估计取 max"的 Jensen 偏差;§1.2-II 是"在固定有限数据集上求经验 MDP 最优解"
+      的乐观偏差(经验最优对真实最优的偏差)。两者方向一致(都偏高),bootstrap 会把它们一起复利。</p></details>
+    <details><summary>III 中 N&gt;1 off-policy 判 False,但 DQN 的 replay buffer 也是 off-policy,为什么不矛盾?</summary>
+      <p>DQN 是 N=1(III 第一行:off-policy 也收敛)。buffer 里 N&gt;1 的靶子才需要 §1.5 的 ρ 修正;
+      这也正是 Rainbow 等用 multi-step return 时要么调小 N、要么接受偏差的原因。</p></details>
+    <details><summary>§1.4-④ 说"MC + 精确函数表达 = 策略迭代",这对实践有什么用?</summary>
+      <p>它给出偏差的对角线:凡是引入 bootstrap 的设计(小 N、target 滞后、FA 投影)都在往偏差侧走;
+      凡是靠近 MC 侧的设计(大 N、GAE 大 λ)都在往方差侧走。调参的本质是在这条对角线上选位置。</p></details>
+  </div>
+
+</div>
+<script src="../assets/js/site.js"></script>
+<script>
+// §1.1 模拟验证:max of 10 N(0,1)
+(function(){
+  const cv = document.getElementById("simCv"), ctx = cv.getContext("2d");
+  const stat = document.getElementById("simStat");
+  let samples = [];
+  function draw(){
+    const bins = new Array(40).fill(0), lo = -1, hi = 4;
+    let mx = 0;
+    for(const v of samples){ const b = Math.min(39, Math.max(0, Math.floor((v-lo)/(hi-lo)*40))); bins[b]++; mx = Math.max(mx, bins[b]); }
+    ctx.clearRect(0,0,cv.width,cv.height);
+    const xOf = i => 30 + i/40*(cv.width-50), yOf = c => cv.height-24 - (c/mx)*(cv.height-50);
+    ctx.fillStyle = "#5477bf";
+    bins.forEach((c,i)=>{ if(c) ctx.fillRect(xOf(i), yOf(c), (cv.width-50)/40-1, cv.height-24-yOf(c)); });
+    // 真值 0 与均值线
+    const mean = samples.reduce((a,b)=>a+b,0)/Math.max(1,samples.length);
+    const x0 = xOf((0-lo)/(hi-lo)*40), xm = xOf((mean-lo)/(hi-lo)*40);
+    ctx.setLineDash([5,4]); ctx.strokeStyle="#23202e";
+    ctx.beginPath(); ctx.moveTo(x0,20); ctx.lineTo(x0,cv.height-24); ctx.stroke();
+    ctx.strokeStyle="#a6625d"; ctx.beginPath(); ctx.moveTo(xm,20); ctx.lineTo(xm,cv.height-24); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle="#23202e"; ctx.font="12px sans-serif";
+    ctx.fillText("真值 max Q* = 0", x0-30, 14);
+    ctx.fillStyle="#a6625d"; ctx.fillText("E[max Q̂] = "+mean.toFixed(2), Math.min(xm-80, cv.width-130), 14);
+    stat.textContent = "已模拟 "+samples.length.toLocaleString()+" 次";
+  }
+  function run(n){
+    for(let i=0;i<n;i++){ let m=-1e9; for(let a=0;a<10;a++){ const u1=Math.random(),u2=Math.random();
+      const g=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2); if(g>m)m=g; } samples.push(m); }
+    if(samples.length>40000) samples = samples.slice(-40000);
+    draw();
+  }
+  document.getElementById("simBtn").addEventListener("click", ()=>run(2000));
+  run(2000);
+})();
+
+// §1.5 推导步骤条
+(function(){
+  const steps = document.querySelectorAll("#deriv .step");
+  const hint = document.getElementById("stepHint");
+  let i = 0;
+  function show(){
+    steps.forEach((s,j)=>s.classList.toggle("active", j===i));
+    hint.textContent = steps[i].dataset.hint || "";
+  }
+  document.getElementById("prevStep").addEventListener("click", ()=>{ i=Math.max(0,i-1); show(); });
+  document.getElementById("nextStep").addEventListener("click", ()=>{ i=Math.min(steps.length-1,i+1); show(); });
+  show();
+})();
+</script>
+</body>
+</html>

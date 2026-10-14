@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 3 讲 · Q 学习与 Actor-Critic:偏差控制 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="hw1-imitation.html">第 1 讲</a><a href="hw2-policy-gradient.html">第 2 讲</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">第 3 讲 · 误差观:偏差控制</span>
+    <h1>Q 学习与 Actor-Critic:<em>用偏差换方差之后</em></h1>
+    <p>HW2 的数据用一次就扔,HW3 想让旧数据反复可用。代价是 bootstrap:
+      靶子里装着自己的估计——安静,但会有方向地错。本讲就是怎么管住这种错。</p>
+  </section>
+
+  <div data-tabs>
+    <div class="tabbar">
+      <button class="tab-btn active" data-tab="t-problem">① 问题与任务</button>
+      <button class="tab-btn" data-tab="t-algo">② 算法</button>
+      <button class="tab-btn" data-tab="t-problems">③ 算法设计时遇到的问题</button>
+      <button class="tab-btn" data-tab="t-confusions">④ 卡壳点</button>
+      <button class="tab-btn" data-tab="t-engineering">⑤ 工程落地</button>
+      <button class="tab-btn" data-tab="t-code">⑥ 代码实现</button>
+      <button class="tab-btn" data-tab="t-quiz">⑦ 自测</button>
+    </div>
+
+    <div class="tab-panel active" id="t-problem">
+      <h2>① 问题与任务:从"用一次就扔"到"反复使用"</h2>
+      <p>HW2 的策略梯度有个奢侈的浪费:每条 rollout 只能用于一次更新,然后丢弃——
+        因为 ∇J 是对当前策略分布取的期望,旧数据估算的是旧目标。能不能让旧数据反复使用?
+        这是 off-policy 的吸引力:<b>样本效率可以提升一个量级</b>(真机/慢仿真里,样本就是钱)。</p>
+      <p>绕开"旧数据有偏"有两条路:① 重要性采样修正(IS)——无偏,但方差随轨迹长度指数爆炸
+        (HW2 §9.4 已证);② <b>bootstrap</b>——靶子写成"一步真奖励 + 自己的估计垫付余生"
+        (y = r + γ·Q̂(s′))。它对数据是谁采的几乎不在乎(详见③④),却引入了新误差:
+        <b>偏差,且偏差会复利</b>。HW3 的全部技术,本质上都是偏差控制。</p>
+      <p>问题的另一半:策略从哪来?HW2 直接学策略网络;HW3 改为学"打分表"Q,
+        策略从分数里读出来——离散动作可以挨个比大小(argmax 免费),
+        <b>连续动作没法挨个比</b>(max_a Q(s,a) 是连续优化问题),这是 DQN 与 SAC 分家的原因。</p>
+      <div class="note"><b>官方文档(hw3.pdf)写了什么:</b>四部分——
+        §1 理论题 multistep Q-learning(N-step 靶子的偏差/方差/函数逼近/重要性采样,本站有<a href="hw3-theory.html">逐题推导页</a>);
+        §2 DQN:实现 Q 网络更新、target network、ε-greedy,跑通 CartPole/LunarLander/MsPacman(像素,1M 步),
+        再做 double Q 与一组超参实验;§3 SAC:先实现 bootstrap 的 critic,再加熵奖励,
+        再分别用 REINFORCE 与 reparametrize 实现 actor,最后对比 single/double/clipped-Q 三种防高估 backup;
+        §4 提交物清单。</div>
+      <p>主线矛盾一句话:bootstrap 让数据可以复用,但靶子里装着自己的估计——
+        <b>它什么时候能信(保修条款),什么时候会把错误滚成雪球(死亡三合一)?</b></p>
+    </div>
+
+    <div class="tab-panel" id="t-algo">
+      <h2>② 算法:从 Bellman 方程到 DQN 与 SAC</h2>
+      <h3>先定义"打分表":V 和 Q 是什么</h3>
+      <pre>V^π(s)    = E_π[ r₀ + γr₁ + γ²r₂ + … | 从 s 出发按 π 玩下去 ]
+Q^π(s,a)  = E_π[ r₀ + γr₁ + γ²r₂ + … | 从 s 出发先做 a,再按 π 玩下去 ]</pre>
+      <table>
+        <tr><th>符号</th><th>通俗含义</th></tr>
+        <tr><td>V^π(s)</td><td>状态的身价:"这个状态值多少分"</td></tr>
+        <tr><td>Q^π(s,a)</td><td>动作-状态对的身价:"在 s 做 a 值多少分"</td></tr>
+        <tr><td>γ(gamma)</td><td>折扣:明天的 1 块值今天的 γ 块(γ=0.99 时,100 步后的 1 块只剩 0.37)</td></tr>
+        <tr><td>E_π[·]</td><td>按策略 π 玩下去,对所有可能的未来取平均</td></tr>
+      </table>
+
+      <h3>Bellman 方程:打分表的"递归账本"</h3>
+      <pre>Q^π(s,a) = r(s,a) + γ · E_{s′}[ V^π(s′) ]           (按 π 玩)
+Q*(s,a)  = r(s,a) + γ · max_{a′} Q*(s′,a′)          (最优:以后每步都选最好的)</pre>
+      <p>含义:一步动作的身价 = 当场拿的 + 打折后的"余生估值"。
+        最优版本(第二行)说:<b>如果打分表已经全对,把它代入自己,一分不差</b>——这叫不动点(fixed point),
+        它是后面所有 bootstrap 更新的"保修条款"。</p>
+
+      <h3>关键一步:有了 Q*,策略白送</h3>
+      <pre>π*(s) = argmax_a Q*(s,a)</pre>
+      <p>打分表全对时,最优策略就是"每个状态选分最高的动作"——离散空间里挨个比一遍就行,<b>免费</b>。
+        所以 HW3 不再直接学策略,而是学打分表 Q:策略从分数里"读"出来(这叫"从 Q 派生")。</p>
+
+      <h3>Q-learning:把不动点方程变成回归</h3>
+      <pre>靶子:   y = r + γ(1−done) · max_{a′} Q̂(s′,a′)
+回归:   让 Q(s,a) 逼近 y(MSE)
+直觉:   走一步真奖励,余生用自己的估值垫付(bootstrap,自举)</pre>
+      <p>为什么敢垫付?因为不动点性质:估计全对时垫付无误差,估计接近时对的不多。
+        数学原理:表格情形下,"算靶子"这个操作(Bellman backup)是 <b>γ-收缩</b>——
+        任何两张打分表过一遍它,差距必然缩到 γ 倍,反复作用必收敛到唯一不动点 Q*(Banach 不动点定理)。
+        <b>这就是 bootstrap 的保修条款;神经网络(函数逼近)上场后条款失效——③ 的死亡三合一。</b></p>
+
+      <h3>DQN = 这个回归 + 三个稳定器</h3>
+      <p>replay buffer / target network / ε-greedy 是工程稳定器,double Q 是高估的解药——
+        ③ 逐个讲它们各自在灭什么火,这里先记住主体:<b>DQN 学的是一张打分表,argmax 就是它的策略</b>。</p>
+
+      <h3>SAC:连续动作时,argmax 处换成一个"演员"</h3>
+      <p>连续动作没法挨个比大小,于是学一个 actor 网络去逼近 argmax:</p>
+      <pre>目标: max_θ  E_{s~D, a~π_θ} [ Q(s,a) ]      让 actor 出的动作在 critic 那里分尽量高</pre>
+      <p>梯度怎么算?两条路线:</p>
+      <pre>路线 A(REINFORCE):  E[ ∇log π_θ(a|s) · Q(s,a) ]
+     夸/骂:critic 只给分数,不说怎么改(噪声大)
+路线 B(reparametrize):  a = μ_θ(s) + σ_θ(s)·ξ,  ξ ~ N(0,1)
+     ∇θ E_ξ[ Q(s, μ_θ(s)+σ_θ(s)ξ) ] = E_ξ[ ∇θ Q(s, μ_θ+σ_θξ) ]
+     梯度穿过 critic 直传(安静,是 SAC 的实际选择)</pre>
+      <p>路线 B 的数学原理(重参数化技巧):采样本身含 θ、不可导;
+        把动作改写成"参数决定的确定函数 + 与 θ 无关的外部噪声 ξ"——期望变成对 ξ 取,
+        ξ 不含 θ,期望号里的函数却处处可导,梯度顺着"Q 对 a 的导数"流回 actor 参数。
+        PyTorch 里就是 <code>.rsample()</code>(带梯度的采样)与 <code>.sample()</code>(不带)的区别——⑥ 还会碰到。</p>
+
+      <h3>熵正则:给"随机性"发奖金</h3>
+      <pre>新目标: E[Q] + β · H(π),   H(π) = E[ −log π(a|s) ]    (熵:分布有多随机)</pre>
+      <p>温度 β 是"随机性换奖励的汇率":β 大,宁可不确定也要多试(探索);β 小,快收敛到贪心。
+        熵出现在两个地方:actor 的 loss 里(鼓励它别太笃定)和 critic 的靶子里(让 Q 也学会给随机性记账——
+        这叫 soft Q)。这也是连续空间取代 ε-greedy 的探索机制。</p>
+
+      <h3>结果:两个算法各给你什么</h3>
+      <table>
+        <tr><th></th><th>DQN(离散)</th><th>SAC(连续)</th></tr>
+        <tr><td>打分表</td><td>s → 每个动作一值(向量输出,argmax 免费)</td><td>(s,a) 拼接 → 单值(现问现答)</td></tr>
+        <tr><td>策略</td><td>argmax Q(无独立 actor)</td><td>actor 网络(学出来的 argmax)</td></tr>
+        <tr><td>探索</td><td>ε-greedy 调度</td><td>熵奖励 + 温度 β</td></tr>
+        <tr><td>防高估</td><td>double Q(选评解耦)</td><td>clipped-Q(两个 critic 取 min)</td></tr>
+      </table>
+      <p>和 HW2 的关系也一并记住:GAE 的 λ 与本讲的 N-step 是同一个偏差-方差旋钮的两端——
+        HW2 你拧在偏方差侧(MC 为主),HW3 拧到底(N=1,全 bootstrap)。
+        两份作业因此一个讲方差、一个讲偏差。</p>
+    </div>
+
+    <div class="tab-panel" id="t-problems">
+      <h2>③ 算法设计时遇到的问题:每个组件都是一次救火</h2>
+      <h3>问题 1:靶子会躲 —— target network(硬更新 / Polyak 软更新)</h3>
+      <p>TD 回归是"半梯度":算梯度时假装靶子与参数无关(torch.no_grad)。
+        但若靶子和预测共用同一网络且每步都动,就形成正反馈:预测涨 → 靶子涨 → 预测接着涨。
+        解法:冻结一个旧网络专门出靶——硬更新(每 K 步拷贝,像爬楼梯)或 Polyak 软更新(每步挪 τ=0.005,永远慢半拍)。
+        <b>注意:target network 只治"晃"(反馈环),不治"歪"(系统性高估)——两种病,别混淆。</b></p>
+      <h3>问题 2:max 天生乐观 —— double Q(选评解耦)</h3>
+      <p>max 是凸函数,Jensen 给出 E[max Q̂] ≥ max E[Q̂]:Q̂ 逐点无偏也没用,
+        取 max 专门挑"运气好的高估"(10 个标准正态取 max,期望 ≈ +1.54)。
+        而且 bootstrap 会把偏高的值当靶子回灌,逐轮复利。解法:用在线网络选 a′、target 网络评分——
+        选择器与评估器的噪声不同源,max 不再专挑被高估的那次。实测 DDQN &gt; DQN 稳定可复现:
+        高估不是理论焦虑,是实测差距。</p>
+      <h3>问题 3:三件套凑齐会失控 —— 死亡三合一(函数逼近 + bootstrap + off-policy)</h3>
+      <p>表格的 γ-收缩保证收敛;函数逼近的"拟合"步骤在 ∞-范数下可能扩张,复合后不再收缩 → 可能发散。
+        作业特意安排你亲眼看:CartPole 学习率调大 50 倍,Q 值胀过真值上限并随换靶台阶式上抬、
+        critic 误差大两个数量级、策略学不起来(见⑤ 翻车博物馆)。稳定器(target net、梯度裁剪、lr 调度)只能压振幅,治不了根。</p>
+      <h3>问题 4:连续动作的 max 算不出来 —— actor 网络</h3>
+      <p>连续空间 max_a Q(s,a) 是连续优化问题,没法在线求解。DQN 的 argmax 免费,是因为动作可数。
+        于是引入 actor 近似 argmax——actor-critic 分家:critic 负责评价任意 (s,a),actor 负责提出值得评价的 a。</p>
+      <h3>问题 5:连续空间的高估换了马甲 —— clipped double-Q(取 min)</h3>
+      <p>没有 max 算子了,但 actor 会<b>专挑 critic 高估的动作去钻</b>(reparametrize 梯度直接朝 Q 的虚高尖峰爬),
+        效果等同 max 偏差。解法:训练两个 critic,靶子取两者较小的——故意保守。
+        clip-Q 和 DDQN 治的是同一个病(过估计),理解 TD3/SAC 都从 DDQN 出发会顺很多。</p>
+      <h3>问题 6:探索不能白来 —— ε-greedy vs 熵奖励</h3>
+      <p>off-policy 的收敛前提是每个 (s,a) 被无穷次访问;行为策略越学越确定,旧区域就再也不去了。
+        离散空间留 ε 概率乱动(ε-greedy 调度);连续空间给分布发"随机性奖金"(熵奖励,温度 β 是汇率)。
+        作业里 β 固定(yaml 手调);原论文用对偶变量自动调(目标熵 −dim(A)),那是拓展阅读。</p>
+    </div>
+
+    <div class="tab-panel" id="t-confusions">
+      <h2>④ 卡壳点(我当年卡住的三个)</h2>
+      <div class="qa"><b>卡壳点 1:HW2 的数据用一次就扔,replay buffer 凭什么能反复用旧数据?</b><br>
+        看两个公式就懂了。HW2 的策略梯度,必须用<b>当前策略采的数据</b>来算——数据旧了,
+        算出来的就是旧策略的梯度,所以 HW2 的数据只能即用即扔。
+        而 DQN 的靶子是"奖励 + γ × 下一步最高分":奖励是环境给的,最高分是网络自己算的,
+        <b>跟这条经验当初是谁采的,一点关系都没有</b>。所以旧经验照样能当教材。
+        代价也有:buffer 里大多是旧策略留下的经验,新策略刚飞到的新区域样本很少,
+        只能靠 ε-greedy、熵奖励留一笔"乱动"的预算去补。</div>
+      <div class="qa"><b>卡壳点 2:靶子里装着自己的估计,这不是循环论证吗?</b><br>
+        是,但有"保修条款"。Bellman 方程保证:<b>如果你的估计已经全对</b>,那用自己的估计当靶子,
+        算出来一分不差(这叫不动点)。所以 bootstrap 是赌"我离正确答案不远"。
+        赌输的代价:错估计被当真靶子,下一轮接着错,误差滚雪球。
+        什么时候这赌稳赢?表格情形——数学上有收缩性保证,一定收敛。
+        什么时候可能输光?函数逼近 + bootstrap + off-policy 三件套凑齐的时候(死亡三合一,
+        实验室的滑块就是给你看这个的)。</div>
+      <div class="qa"><b>卡壳点 3:REINFORCE 和 reparametrize 到底差在哪?</b><br>
+        目标完全一样:让 actor 输出的动作在 critic 那里得高分。差在<b>梯度怎么传回 actor</b>。
+        REINFORCE:采几个动作让 critic 打分,分高的把它概率调大、分低的调小——
+        critic 只给一个分数,不说怎么改,所以噪声大。
+        reparametrize:把动作写成 a = μ + σ × 噪声,噪声从外面来、和网络参数无关,
+        梯度就能像普通反向传播一样<b>穿过 critic</b>,直接告诉 actor 往哪改,所以安静。
+        实验差距:97 vs 4316(见⑤)。</div>
+    </div>
+
+    <div class="tab-panel" id="t-engineering">
+      <h2>⑤ 工程落地:实验、读法与翻车</h2>
+      <p>这一节不只摆结果,更教你<b>怎么读 RL 的学习曲线</b>:看斜率、看绝对值、看均值背后的单局分布。四张图,四种读法。</p>
+      <h3>图 1 · LunarLander:vanilla vs double Q(3 seeds)</h3>
+      <figure><img src="../assets/images/hw3/fig_dqn_lunar.png" alt="LunarLander 红蓝对照"></figure>
+      <table>
+        <tr><th>配置</th><th>末5次 eval(3 seeds)</th><th>最优单局</th><th>q_values 末段</th></tr>
+        <tr><td>vanilla</td><td>−57 / −52 / −91</td><td>11–40</td><td>~37(更高!)</td></tr>
+        <tr><td>double Q</td><td>89 / 130 / 59</td><td>216 / 211 / 142</td><td>~30(更低)</td></tr>
+      </table>
+      <div class="note"><b>怎么读:</b>左图先看<b>斜率</b>——红线(doubleQ)到 300k 还在往上走(没到顶,只是步数不够);
+        蓝线(vanilla)的平台期就是"高估后原地打转"。右图是关键物证:vanilla 的 Q 预测<b>反而更高</b>,
+        真实回报却差一个量级——"分打得很自信,考得很差",这就是 max 高估在数据里的样子。
+        课后题:只看左图你能发现高估吗?(答:不能。必须同时看 Q 的绝对值。)</div>
+      <h3>图 2 · HalfCheetah:三种 actor 梯度估计器</h3>
+      <figure><img src="../assets/images/hw3/fig_sac_cheetah.png" alt="Cheetah 三估计器"></figure>
+      <p>REINFORCE-1 贴地 <b>97</b>;REINFORCE-10 能学但震荡 <b>1461</b>;reparametrize 快且稳 <b>4316</b>。</p>
+      <div class="note"><b>怎么读:</b>三条粗线是均值,真正讲故事的是<b>细线(每次评估的原始值)</b>的抖动幅度——
+        reparametrize 的细线几乎贴着粗线(方差小),REINFORCE-10 的细线在 700–2600 之间甩(方差大),
+        REINFORCE-1 的细线就没离开过地面。<b>同一个优化目标,方差路径不同,命运不同</b>——
+        你以后再看到"两条算法曲线",第一反应应该是去看它的原始抖动。</div>
+      <h3>图 3 · Hopper:防高估三档力度</h3>
+      <figure><img src="../assets/images/hw3/fig_sac_hopper.png" alt="Hopper 三 backup"></figure>
+      <p>single-Q <b>350</b> / double-Q <b>440</b> / clipped-Q <b>544</b>。</p>
+      <div class="note"><b>怎么读:</b>右图(q_values)和左图(eval)对着看:clipped-Q 的 Q 预测<b>最低</b>(~175),
+        回报却<b>最高</b>——保守靶子没有拖累学习,反而成就了学习。
+        注意一个坑:double-Q 的 Q 值比 single-Q 略高,并不说明 double-Q 更高估——
+        Q 值里混着"偏差虚高"和"策略更好带来的真值更高"(它的回报确实也更高)。
+        <b>跨配置比较 Q 值时,先问自己:这是偏差,还是它真的更值钱?</b></div>
+      <h3>图 4 · MsPacman(像素,CNN,1M 步,GPU 2h05m)</h3>
+      <figure><img src="../assets/images/hw3/fig_dqn_mspacman.png" alt="MsPacman"></figure>
+      <p>eval <b>1776</b>(课程基准 ~1500),重录复跑 1602/峰值 1856。行为视频在动物园,会躲鬼、会抢豆。</p>
+      <div class="note"><b>怎么读:</b>早期蓝线(eval)远在橙线(train)上方,别慌,这不是 bug——
+        橙线是"带 ε 探索的行为策略"的在线表现(早期 ε≈1,接近乱动),蓝线是"几乎不贪玩的评估策略"。
+        ε 退火完毕(约 50 万步),两线收拢。<b>train 和 eval 的差距,就是 off-policy 里
+        "行为策略 ≠ 目标策略"的直接可视化。</b></div>
+      <h3>sanity 三检(实现正确性的判定)</h3>
+      <p>先在小任务上证明算法正确,再上大任务(大任务学不会的锅,90% 是任务难度/探索/奖励,不是实现):
+        ① Pendulum 只训 critic:Q 应稳定在大负数(奔向 −∞ 或停在 0 都是 bug);
+        ② actor 只受熵奖励时,熵应升向 U[−1,1] 的最大熵 log 2 ≈ 0.69;
+        ③ InvertedPendulum 两种 actor 梯度都应到 ~1000(实测 826 / 920)。</p>
+      <div class="note"><b>补记一个"握手瞬间"(CartPole):</b>满分时 Q̂ 收敛到 ~90–99,而 γ=0.99 的解析上限
+        Σγᵗ = (1−γ⁵⁰⁰)/(1−γ) ≈ 99.3——神经网络和 Bellman 方程在同一个数上握手。
+        这是我第一次"看见"价值函数是对的(完整曲线见深度分析页)。</div>
+      <h3>翻车博物馆</h3>
+      <p>展品按病因分四类,正好对应全站的"失败世界观":<b>分布偏移</b>(HW1)、<b>方差</b>(HW2)、
+        <b>偏差</b>(HW3,本馆主场)、<b>信息不足</b>(POMDP 实验)。调试任何 RL 系统,先归因到哪一类,再上对应的药。</p>
+      <div class="fail"><b>展品 1:CartPole lr=0.05(默认的 50 倍)。</b>
+        Q 值胀到 ~120(真值上限 ≈99)并随 target 刷新台阶式上抬;critic 误差大 1–2 个数量级剧烈震荡;
+        eval 卡死在 50–85。没有飞向无穷,是因为 target network 每 1000 步才刷新——稳定器把爆炸压成了高位震荡。</div>
+      <div class="fail"><b>展品 2:LunarLander vanilla 2 号种子。</b>
+        曾单次摸到 222 分,然后彻底崩掉,末段 −52。冲高那一下就是 max 高估的幻影——Q 在某区域虚高,
+        策略慕名而去,数据一去,虚高被证伪,崩盘。"摸到 ≠ 守住"。</div>
+      <div class="fail"><b>展品 3:学习率四档扫描(§2.6)。</b>
+        lr ∈ {1e-3, 5e-3, 1e-2, 0.05}:只有 1e-3 守住 500;5e-3 和 1e-2 都摸到过 500、末段塌回 ~100;
+        0.05 从未学会。反馈环增益连续可调,三种命运连续过渡。
+        <figure><img src="../assets/images/hw3/fig_dqn_hparam.png" alt="lr 四档扫描"></figure></div>
+      <div class="fail"><b>展品 4:LunarLander vanilla 的行为视频。</b>
+        三局连录(74.5 / 29.3 / −11.0):悬停、犹豫、栽下去——max 高估的幻影在行为上的样子。
+        对照动物园里 doubleQ 的两局软着陆(186/167),"选评解耦"值多少分,眼睛比曲线更直观。
+        <figure><video controls loop muted playsinline preload="metadata" style="max-width:420px;border-radius:10px;border:1px solid var(--line)" src="../assets/videos/lunar_vanilla_crash.mp4"></video>
+        <figcaption>vanilla DQN 在 LunarLander 上的典型结局(300k 训练后)</figcaption></figure></div>
+      <div class="qa"><b>还想看同一个环境在三种范式下的完整故事?</b>
+        LunarLander 我还用 HW2 的 GAE 着陆过(180),加上这次的 vanilla 崩盘、doubleQ 双峰、重跑世界线变更——
+        我把它写成了专题页:<a href="lunarlander.html"><b>一个环境的三种死法 →</b></a></div>
+    </div>
+
+    <div class="tab-panel" id="t-code">
+      <h2>⑥ 代码实现</h2>
+      <p>本讲所有实现集中在四个文件。先记住数据流,再读代码:</p>
+<pre>env.step(a) → replay_buffer.insert(s,a,r,s′,done剔除截断)
+     ↓ 每步
+batch = buffer.sample(128) → agent.update(batch):
+   DQN:  critic 回归 [r + γ(1−d)·max_a′ Q_target(s′,a′)];每 K 步 target ← online
+   SAC:  critic 回归 [r + γ(1−d)·(Q_targ(s′,a′~π) + βH)];actor 最大化 E[Q]+βH;Polyak 软更新
+     ↓ 每 eval_interval
+eval_env 用近乎贪心策略跑 10 局 → 记 eval_return</pre>
+      <ul>
+        <li><code>cs285/agents/dqn_agent.py</code> — get_action(ε-greedy)/ update_critic(no_grad 靶子 + gather)/ update(换靶节奏)</li>
+        <li><code>cs285/agents/soft_actor_critic.py</code> — update_critic / entropy(rsample!)/ actor_loss_{reinforce,reparametrize}/ q_backup_strategy</li>
+        <li><code>cs285/infrastructure/replay_buffer.py</code> — 普通版 vs 省内存版(on_reset 存首帧,insert 只存最新帧,索引窗口拼 4 帧)</li>
+        <li><code>cs285/scripts/run_hw3_{dqn,sac}.py</code> — 主循环接线;done 与 TimeLimit 截断的区分在这里</li>
+      </ul>
+      <h3>深入:四页工程解剖</h3>
+      <div class="cards">
+        <div class="card">
+          <span class="k">解剖 1</span>
+          <h3>DQN 数据流</h3>
+          <p>主循环"玩/存/学"三步,三个函数三种职责,以及三个最容易踩的坑(done 截断、gather、double Q 选与评)。</p>
+          <div class="foot"><a class="btn" href="../engineering/anatomy-dqn.html">读解剖</a></div>
+        </div>
+        <div class="card">
+          <span class="k">解剖 2</span>
+          <h3>SAC 装配</h3>
+          <p>一次 update 里的五次网络调用:哪里必须 no_grad、哪里必须 rsample,划错一处全盘皆输。</p>
+          <div class="foot"><a class="btn" href="../engineering/anatomy-sac.html">读解剖</a></div>
+        </div>
+        <div class="card">
+          <span class="k">解剖 3</span>
+          <h3>回放池</h3>
+          <p>普通版五数组契约;Atari 省内存版怎么把 28GB 压到 7GB(帧只存一份 + 索引拼 4 帧)。</p>
+          <div class="foot"><a class="btn" href="../engineering/anatomy-replay.html">读解剖</a></div>
+        </div>
+        <div class="card">
+          <span class="k">解剖 4</span>
+          <h3>配置系统</h3>
+          <p>一个 yaml 怎么变成训练:工厂函数、注册表、ε/lr 分段调度器,以及两个 starter 小怪癖。</p>
+          <div class="foot"><a class="btn" href="../engineering/anatomy-config.html">读解剖</a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="t-quiz">
+      <h2>⑦ 自测</h2>
+      <details><summary>Q1:为什么 N=1 的 Q-learning off-policy 不需要重要性采样修正,而 N→∞ 需要?</summary>
+        <p>N=1 的靶子 r + γ·max Q(s′,a′) 中,r 已观测(无需修正),max 不引用任何未来动作;
+          N 步靶子里的多步奖励按行为策略 π′ 采样,要修正必须乘似然比;N→∞ 时权重退化为全轨迹似然比连乘,
+          方差随 horizon 指数爆炸(第 2 讲 §9.4)。bootstrap 的本质:用偏差换掉 IS 的方差。</p></details>
+      <details><summary>Q2:Q̂ 逐点无偏,为什么 max_a Q̂ 仍系统性偏高?double Q 怎么修?</summary>
+        <p>max 是凸函数,Jensen:E[max] ≥ max E(10 个标准正态取 max 期望 ≈ +1.54)。
+          double Q 解耦"选"(online argmax)与"评"(target 打分),选择器挑中的不再是评估器的噪声峰值。</p></details>
+      <details><summary>Q3:target network 能修正 overestimation 吗?</summary>
+        <p>不能。它只稳定"靶子会躲"的反馈环;靶子本身的系统性偏高纹丝不动。
+          高估要靠 double/clipped Q。钉住歪靶子,只是稳定地歪着。</p></details>
+    </div>
+  </div>
+
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工程解剖 · SAC 装配 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="../index.html#engineering">工程解剖</a><a href="anatomy-dqn.html">DQN 解剖</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">工程解剖 2</span>
+    <h1>SAC:一次 update 里的<em>五次调用</em></h1>
+    <p>SAC 的一次更新,要对网络调用五次:两次算靶子、一次回归、一次讨好 critic、一次慢动作换靶。
+      哪里能传梯度、哪里必须掐断,是本页唯一真正重要的事。</p>
+  </section>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>装配图:五次调用的顺序</h2>
+<pre>agent.update(一批旧经验):
+│
+├─ ① 算靶子(在 no_grad 里,梯度禁区):
+│    让 actor 对"下一状态"出个动作 a′
+│    让冻结的 target critic 给 a′ 打分
+│    多个 critic 时先整形:doubleq 换着评 / min 取最小的 / mean 取平均
+│    如果开熵奖励:靶子里再加 β×熵
+│    靶子 y = 奖励 + γ(1−done)×上面这个分
+│
+├─ ② critic 回归(唯一更新 critic 的地方):
+│    用当前 critic 给"经验里真实执行的动作"打分,逼近 y
+│    MSE → backward → critic 的优化器走一步
+│
+├─ ③ actor 讨好(唯一更新 actor 的地方):
+│    actor 出个分布,用 rsample 采动作(梯度能穿过采样的那种)
+│    critic 给这个动作打分(这次 critic 只是"路过",不更新)
+│    loss = −平均分 − β×熵 → backward → actor 的优化器走一步
+│
+└─ ④ 换靶:
+     软更新(默认):每一步 target 往 critic 挪 0.5%(Polyak)
+     硬更新(可选):每 1000 步直接拷贝</pre>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>梯度边界:错一处全盘皆输</h2>
+    <table>
+      <tr><th>调用</th><th>梯度?</th><th>划错边界的后果</th></tr>
+      <tr><td>① actor 采样 a′、target critic 评分</td><td>❌ 必须 no_grad</td><td>忘了掐:靶子跟着网络更新一起动,"靶子会躲"复发</td></tr>
+      <tr><td>② critic 回归靶子</td><td>✅ 只更新 critic</td><td>这里梯度污染 actor?不会——actor 的优化器只认 actor 参数</td></tr>
+      <tr><td>③ rsample 采动作</td><td>✅ 梯度穿过 critic 回 actor</td><td>误用 .sample():梯度断在采样处,actor 收不到 Q 的信号,学不会</td></tr>
+      <tr><td>③ entropy(dist)</td><td>✅ 也要 rsample</td><td>误用 .sample():熵奖励的梯度期望恒为 0,熵不再涨</td></tr>
+    </table>
+    <div class="note"><b>一个隐蔽细节:</b>③ 的 backward 也会让 critic 参数沾上梯度(梯度路过时留下的)。
+      starter 的顺序恰好安全:下一次 ② 开头的 zero_grad 会把它清掉,而 critic 只被 ② 的 loss 更新。
+      如果哪天你把 actor 更新挪到 critic 前面,这个保护就没了。</div>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>每个旋钮一句话</h2>
+    <table>
+      <tr><th>旋钮</th><th>白话</th></tr>
+      <tr><td>两种 actor 梯度</td><td>REINFORCE:动作好就夸、坏就骂(噪声大);reparametrize:让梯度直接穿过 critic(安静,默认选它)</td></tr>
+      <tr><td>熵奖励与温度 β</td><td>动作越随机越有奖,β 是"随机性换奖励的汇率";大→多探索,小→快收敛</td></tr>
+      <tr><td>靶子里的熵(backup_entropy)</td><td>让 Q 也学会"给随机性记账",和 actor loss 里的熵配套,缺一边就不自洽</td></tr>
+      <tr><td>双 Q 取小(clipped)</td><td>两个评分员,靶子只信较低分——故意保守,专治 actor 钻 Q 的虚高尖峰</td></tr>
+      <tr><td>软/硬换靶</td><td>软:每步挪 0.5%,平滑;硬:每千步拷贝,像爬楼梯。都为了靶子别躲</td></tr>
+    </table>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>与 DQN 的同构对照</h2>
+    <table>
+      <tr><th>角色</th><th>DQN</th><th>SAC</th></tr>
+      <tr><td>靶子里的"未来动作"</td><td>argmax Q_target(离散,挨个比)</td><td>从当前 actor 采一个(连续,没法挨个比)</td></tr>
+      <tr><td>防高估</td><td>double Q:online 选 / target 评</td><td>clipped-Q:两个 target critic 取 min</td></tr>
+      <tr><td>换靶</td><td>硬更新(每 K 步)</td><td>Polyak 软更新(每步 τ=0.005)</td></tr>
+      <tr><td>探索</td><td>ε-greedy 调度</td><td>熵奖励(靶子和 actor loss 里都有)</td></tr>
+      <tr><td>策略</td><td>argmax(免费)</td><td>actor 网络(学出来的 argmax)</td></tr>
+    </table>
+    <p>看懂这张表,SAC 就是"连续动作版的 DQN,外加一个讨好 critic 的小网络"。剩下的全是同一套稳定器。</p>
+  </div>
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

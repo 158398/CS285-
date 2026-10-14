@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实验室 · 死亡三合一滑块 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+<style>
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin:14px 0}
+.ctrl label{display:flex;justify-content:space-between;font-size:13px;font-weight:700;color:var(--sub)}
+.ctrl output{color:var(--amber-d);font-weight:900}
+input[type=range]{width:100%;accent-color:var(--amber)}
+.toggle{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;margin-top:8px}
+#verdict{font-size:17px;font-weight:800;padding:10px 16px;border-radius:10px;display:inline-block;margin:8px 0}
+.ok{background:var(--teal-soft);color:var(--teal);border:1px solid #bcd6c9}
+.warn{background:var(--amber-soft);color:var(--amber-d);border:1px solid #e8c39a}
+.bad{background:var(--bad-soft);color:var(--bad);border:1px solid #e5b3a6}
+canvas{width:100%;height:380px;background:#fffdf7;border:1px solid var(--line);border-radius:10px}
+</style>
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="../index.html#lab">实验室</a><a href="../chapters/hw3-q-learning.html">第 3 讲</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">实验室 · 互动玩具</span>
+    <h1>死亡三合一<em>滑块</em></h1>
+    <p>函数逼近 + bootstrap + off-policy 为什么能让 Q 值爆炸?拖动三个旋钮,亲眼看 Q 迭代的三种命运。
+      这是标量示意图(常数偏差 b 模拟 max 算子的系统性高估),机制与真网络一致——
+      第 3 讲 CartPole lr=0.05 的现场就是它。</p>
+  </section>
+
+  <div class="tab-panel active" style="display:block">
+    <div class="controls">
+      <div class="ctrl">
+        <label>学习率 α <output id="oAlpha">0.50</output></label>
+        <input type="range" id="alpha" min="0.01" max="2.5" step="0.01" value="0.5">
+      </div>
+      <div class="ctrl">
+        <label>折扣 γ <output id="oGamma">0.99</output></label>
+        <input type="range" id="gamma" min="0.80" max="0.999" step="0.001" value="0.99">
+      </div>
+      <div class="ctrl">
+        <label>单步高估偏差 b <output id="oBias">1.05</output></label>
+        <input type="range" id="bias" min="1.00" max="1.12" step="0.005" value="1.05">
+      </div>
+      <div class="ctrl">
+        <label>靶子刷新周期 K(步)<output id="oK">50</output></label>
+        <input type="range" id="K" min="1" max="200" step="1" value="50">
+        <div class="toggle">
+          <input type="checkbox" id="freeze" checked>
+          <label for="freeze">启用 target network(冻结靶子)</label>
+        </div>
+      </div>
+    </div>
+    <span id="verdict" class="ok"></span>
+    <p class="mute" style="color:var(--sub);font-size:13px">更新规则:移动靶 Q←Q+α(r+γbQ−Q);冻结靶 Q←Q+α(r+γbQ<sub>冻</sub>−Q),每 K 步 冻结值←当前 Q。
+      真值上限 Q* = r/(1−γ)(虚线);偏差不动点 r/(1−γb)(红线,γb&lt;1 时存在)。</p>
+    <canvas id="cv" width="960" height="380"></canvas>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>怎么玩</h2>
+    <ol>
+      <li>先把 b 拖到 <b>1.00</b>(无偏差):任意 α、γ 都收敛到 Q*——无偏差的世界很温柔。</li>
+      <li>把 b 拖到 <b>1.05</b>:γ=0.99 时 γb=1.0395&gt;1,<b>任何学习率都爆炸</b>——偏差过了 1/γ 的红线,复利就赢了。这正是 CartPole lr=0.05 的遭遇。</li>
+      <li>保持 b=1.05,把 γ 降到 0.90:γb=0.945&lt;1,又收敛了——但收敛到 <b>r/(1−γb)≈18.2</b> 而不是真值 10:偏差被 bootstrap 放大了 1/(1−γb) 倍。</li>
+      <li>b=1.01 的"温和偏差":γ=0.99 时 γb=0.9999,不动点是真值的 100 倍——这就是 double Q 之后仍残留的高估。</li>
+      <li>关掉 target network(移动靶):收敛边界 α &lt; 2/(1−γb);打开冻结靶,注意爆炸只是被<b>放慢</b>,没有被治——target network 治"晃"不治"歪"。</li>
+    </ol>
+    <div class="note">与真实实验的对应:概念图 fig c(hw3_concepts.png)= 本玩具的冻结靶版本;CartPole lr=0.05(fig_dqn_cartpole.png)= 真网络里的同机制。</div>
+  </div>
+</div>
+
+<script src="../assets/js/site.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+
+function simulate(alpha, gamma, b, K, freeze) {
+  const T = 600, r = 1.0;
+  let Q = 0.0, frozen = 0.0;
+  const traj = [Q];
+  for (let t = 1; t <= T; t++) {
+    if (freeze && t % K === 0) frozen = Q;
+    const ref = (freeze && t % K !== 0) ? frozen : Q;   // 冻结窗口内用旧靶
+    const target = r + gamma * b * ref;
+    Q = Q + alpha * (target - Q);
+    if (!isFinite(Q) || Math.abs(Q) > 1e12) { Q = Math.sign(Q || 1) * 1e12; traj.push(Q); break; }
+    traj.push(Q);
+  }
+  return traj;
+}
+
+function verdict(alpha, gamma, b, freeze) {
+  const gb = gamma * b;
+  if (gb >= 1) return ["bad", "爆炸:γb = " + gb.toFixed(4) + " ≥ 1,偏差复利越滚越大,任何学习率都救不了"];
+  const fixed = (1 / (1 - gb)).toFixed(1);
+  const bound = 2 / (1 - gb);
+  if (!freeze && alpha >= bound)
+    return ["bad", "震荡/爆炸:移动靶下 α ≥ 2/(1−γb) = " + bound.toFixed(1) + ",更新越过收敛半径"];
+  if (b > 1.001)
+    return ["warn", "收敛但有偏:Q → r/(1−γb) ≈ " + fixed + "(真值 " + (1/(1-gamma)).toFixed(1) + "),bootstrap 把偏差放大了"];
+  return ["ok", "稳定收敛:Q → r/(1−γ) = " + (1/(1-gamma)).toFixed(1) + ",无偏世界"];
+}
+
+function draw(traj, gamma, b) {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const qTrue = 1 / (1 - gamma), gb = gamma * b;
+  const qBias = gb < 1 ? 1 / (1 - gb) : null;
+  let vmax = Math.max(qTrue, qBias || 0) * 1.3;
+  for (const v of traj) vmax = Math.max(vmax, Math.min(Math.abs(v), 1e4));
+  const yOf = q => {
+    const c = Math.max(-vmax, Math.min(vmax, q));
+    return cv.height - 30 - (c / vmax) * (cv.height - 60);
+  };
+  ctx.setLineDash([6, 5]); ctx.lineWidth = 1;
+  ctx.strokeStyle = "#23202e";
+  ctx.beginPath(); ctx.moveTo(40, yOf(qTrue)); ctx.lineTo(cv.width - 10, yOf(qTrue)); ctx.stroke();
+  ctx.fillStyle = "#23202e"; ctx.font = "12px sans-serif";
+  ctx.fillText("真值 Q* = " + qTrue.toFixed(1), 44, yOf(qTrue) - 5);
+  if (qBias !== null && qBias < 1e4) {
+    ctx.strokeStyle = "#a6625d";
+    ctx.beginPath(); ctx.moveTo(40, yOf(qBias)); ctx.lineTo(cv.width - 10, yOf(qBias)); ctx.stroke();
+    ctx.fillStyle = "#a6625d";
+    ctx.fillText("偏差不动点 = " + qBias.toFixed(1), 44, yOf(qBias) - 5);
+  }
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "#5477bf"; ctx.lineWidth = 2.5; ctx.beginPath();
+  const n = traj.length;
+  for (let i = 0; i < n; i++) {
+    const x = 40 + (i / 600) * (cv.width - 60);
+    const y = yOf(traj[i]);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = "#5d6080"; ctx.font = "12px sans-serif";
+  ctx.fillText("更新步数 →(共 600 步)", 40, cv.height - 8);
+  ctx.fillText("Q(截断显示至 ±" + vmax.toFixed(0) + ")", 6, 16);
+}
+
+function update() {
+  const alpha = +$("alpha").value, gamma = +$("gamma").value,
+        b = +$("bias").value, K = +$("K").value, freeze = $("freeze").checked;
+  $("oAlpha").textContent = alpha.toFixed(2);
+  $("oGamma").textContent = gamma.toFixed(3);
+  $("oBias").textContent = b.toFixed(3);
+  $("oK").textContent = K;
+  $("K").disabled = !freeze;
+  const traj = simulate(alpha, gamma, b, K, freeze);
+  const [cls, text] = verdict(alpha, gamma, b, freeze);
+  const v = $("verdict"); v.className = cls; v.textContent = text;
+  draw(traj, gamma, b);
+}
+["alpha", "gamma", "bias", "K", "freeze"].forEach(id => $(id).addEventListener("input", update));
+update();
+
+// 嵌入模式(?embed=1):在首页 iframe 里只留玩具本体
+if (new URLSearchParams(location.search).get("embed")) {
+  for (const sel of [".navbar", ".progress", ".hero"]) {
+    const el = document.querySelector(sel);
+    if (el) el.style.display = "none";
+  }
+  document.body.style.background = "#ffffff";
+  document.querySelector(".wrap").style.paddingTop = "10px";
+}
+</script>
+</body>
+</html>

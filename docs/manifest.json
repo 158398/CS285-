@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "static-web-bundle/v1",
+  "title": "CS285 深度强化学习实战教程",
+  "slug": "cs285-deep-rl-journey",
+  "category": "教程",
+  "entry": "index.html",
+  "summary": "以 UC Berkeley CS285 三份作业为主线的深度强化学习实战教程:模仿学习、策略梯度、Q 学习与 Actor-Critic——用对照实验讲清方差与偏差,用翻车现场讲清死亡三合一。含互动实验室与智能体动物园。与官方讲义互补,不替代。",
+  "tags": ["强化学习", "CS285", "DQN", "SAC", "Actor-Critic", "策略梯度", "DAgger", "POMDP"],
+  "pageType": "tutorial",
+  "authoringSource": {
+    "sourceKind": "coursework-repo",
+    "sourceId": "cs285-deep-rl-foundations",
+    "templateId": "",
+    "sessionId": "",
+    "versionId": ""
+  },
+  "features": ["course-index", "multi-page-tutorial", "tabs", "lightbox", "quiz", "interactive-lab", "agent-zoo", "journey-stepper"]
+}

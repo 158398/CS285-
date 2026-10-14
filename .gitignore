@@ -1,0 +1,20 @@
+# 训练日志与缓存
+**/data/
+__pycache__/
+*.pyc
+.anchor/
+.hw3_pdf_extract.txt
+
+# 构建产物与依赖
+node_modules/
+*.egg-info/
+dist/
+build/
+
+# 视频与重型素材(行为视频经 Releases 分发,示例片段除外)
+*.mp4
+!docs/assets/videos/*.mp4
+
+# 系统
+.DS_Store
+Thumbs.db

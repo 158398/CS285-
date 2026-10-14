@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工程解剖 · 回放池 | CS285 实战教程</title>
+<link rel="stylesheet" href="../assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav><a href="../index.html">总目录</a><a href="../index.html#engineering">工程解剖</a><a href="anatomy-dqn.html">DQN 解剖</a></nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+  <section class="hero">
+    <span class="kicker">工程解剖 3</span>
+    <h1>回放池:记忆怎么<em>省着用</em></h1>
+    <p>回放池就干两件事:把经验存下来、随机抽出来。听起来简单,但 Atari 图像一来,
+      存储方式立刻变成一门学问——这页把两个版本都讲清。</p>
+  </section>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>为什么需要它</h2>
+    <p>两句话:① 训练想要<b>随机、不相关</b>的样本,连续的游戏帧彼此太像,得打散;
+    ② 每条经验只用一次太浪费,存起来能反复学。回放池就是装经验的大水缸:
+    新水从上面倒,旧水满了从下面挤出去(默认容量 100 万条)。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>普通版:五个大数组</h2>
+    <p>结构直白:观测、动作、奖励、下一观测、done,各一个定长数组,按位置循环覆盖。
+    契约看 <code>insert</code> 的断言就懂:</p>
+<pre>insert(观测, 动作, 奖励, 下一观测, done):
+  奖励和 done 必须是标量(单条转移,不是一批)
+  观测形状必须和首次一致(数组不能半路变尺寸)
+sample(128):
+  随机抽 128 个位置,打包成字典返回</pre>
+    <p>低维环境(CartPole、MuJoCo)用这个就够——观测才几个数,100 万条也就几十 MB。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>省内存版:图像环境的必修课</h2>
+    <h3>问题:4 帧堆叠,一份帧存四遍</h3>
+    <p>Atari 的观测是"最近 4 帧拼起来"(4×84×84 灰度图)。相邻两步的观测有 3 帧完全重复,
+      如果像普通版那样整个观测整个观测地存,同一张帧要存 4 次——100 万步 ×4 帧 ×84×84,
+      大约 <b>28 GB</b>。</p>
+    <h3>方案:帧只存一份,用索引拼观测</h3>
+<pre>framebuffer:一个超大数组,只按时间顺序存"单帧"(uint8, 1 字节/像素)
+每条转移不再存图,只存两组索引:
+  observation_framebuffer_idcs     → 哪 4 帧拼成"当前观测"
+  next_observation_framebuffer_idcs → 哪 4 帧拼成"下一观测"
+sample 时:按索引从 framebuffer 把 4 帧捞回来,现拼 (4,84,84)</pre>
+    <p>这样 100 万步(加一份冗余)只要约 <b>7 GB</b>,省 75%。</p>
+    <h3>on_reset 和 insert 的分工(最容易混的地方)</h3>
+    <table>
+      <tr><th>调用时机</th><th>干什么</th></tr>
+      <tr><td><code>on_reset</code>(每局第一帧)</td><td>存入本局第一帧,记下"本局从这里开始"</td></tr>
+      <tr><td><code>insert</code>(之后每一步)</td><td>只存<b>最新那一帧</b> + 动作/奖励/done;旧的 3 帧靠索引自动拼上</td></tr>
+    </table>
+    <p>还有一个细节:拼 4 帧时不许跨局——新一局刚开始时历史不足 4 帧,索引会被
+      <code>np.maximum</code> 截到本局起点,绝不会把上一局的尾巴拼进新一局。
+      你在 run 脚本里看到的"只 insert 新观测的最后一帧",就是因为前面 3 帧早就在缸里了。</p>
+  </div>
+
+  <div class="tab-panel active" style="display:block">
+    <h2>给你的调试提示</h2>
+    <p>省内存版的 <code>insert</code> 断言"单帧、ndim==2、uint8"——它不是挑剔,是契约检查:
+    传进来的必须是<b>最新一帧 (84,84) 的原始灰度图</b>,不是整个 (4,84,84) 的堆叠、也不是归一化后的 float。
+    报断言错时,先检查你是不是把整叠或预处理后的图塞进去了。</p>
+  </div>
+</div>
+<script src="../assets/js/site.js"></script>
+</body>
+</html>

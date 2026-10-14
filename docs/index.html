@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CS285 深度强化学习实战教程</title>
+<link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+<header class="navbar">
+  <span class="brand">CS285<em>·实战教程</em></span>
+  <nav>
+    <a href="#journey">三讲主线</a>
+    <a href="#chapters">章节</a>
+    <a href="#lab">实验室</a>
+    <a href="#zoo">动物园</a>
+  </nav>
+</header>
+<div class="progress"></div>
+
+<div class="wrap">
+
+  <section class="hero">
+    <span class="kicker">Imitation → Variance → Bias</span>
+    <h1>从模仿到自主:<em>深度强化学习</em>三讲实战</h1>
+    <p>UC Berkeley CS285(Fall 2023)三份作业的完整复现与个人讲解。<strong>官方给你文档,这里给你工程落地和思维培养。</strong></p>
+    <p>三份作业对应三大方法族:模仿学习(BC/DAgger)、策略梯度(REINFORCE/GAE)、价值学习(DQN/SAC)。
+      每学一族,我们都追问同一个问题——它什么时候会失败、为什么?于是这里还有一条贯穿始终的思维线:
+      用误差分析拆解每一次失败(分布偏移、方差、偏差、信息不足),用方差-偏差权衡理解每个技巧为什么有效。
+      所有结论,都配了自己跑出来的对照实验。</p>
+    <div class="hero-actions">
+      <a class="btn primary" href="#journey">开始主线</a>
+      <a class="btn dark" href="lab/deadly-triad.html">先去实验室玩</a>
+      <a class="btn ghost" href="#">GitHub 仓库(待发布)</a>
+    </div>
+    <div class="hero-art">
+      <svg viewBox="0 0 760 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="从模仿到自主:三讲主线插画">
+        <defs>
+          <linearGradient id="arc" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stop-color="#a6625d"/><stop offset=".5" stop-color="#876bac"/><stop offset="1" stop-color="#0083c5"/>
+          </linearGradient>
+        </defs>
+        <!-- 上升虚线主轴 -->
+        <path d="M60 190 C 260 200, 520 120, 705 70" fill="none" stroke="url(#arc)" stroke-width="3" stroke-dasharray="8 7" stroke-linecap="round"/>
+        <path d="M705 70 l-14 2 m14 -2 l-6 13" fill="none" stroke="#0083c5" stroke-width="3" stroke-linecap="round"/>
+
+        <!-- 01 模仿:大人形牵着小人形(复制) -->
+        <g>
+          <circle cx="110" cy="150" r="52" fill="rgba(255,255,255,.06)" stroke="rgba(223,226,234,.3)"/>
+          <circle cx="96" cy="128" r="9" fill="#f0a58e"/>
+          <path d="M96 137 v22 m0 -14 l-12 9 m12 -9 l12 9 m-12 8 l-8 18 m8 -18 l8 18" stroke="#f0a58e" stroke-width="4" fill="none" stroke-linecap="round"/>
+          <circle cx="130" cy="140" r="7" fill="none" stroke="#dfe2ea" stroke-width="3" stroke-dasharray="3 3"/>
+          <path d="M130 147 v16 m0 -10 l-8 6 m8 -6 l8 6 m-8 4 l-6 13 m6 -13 l6 13" stroke="#dfe2ea" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="4 3"/>
+          <text x="110" y="222" text-anchor="middle" font-size="13" fill="#c9cdd8" font-weight="700">01 模仿 · Imitation</text>
+        </g>
+
+        <!-- 02 方差:噪声波浪与均值线 -->
+        <g>
+          <circle cx="380" cy="120" r="52" fill="rgba(255,255,255,.06)" stroke="rgba(223,226,234,.3)"/>
+          <path d="M340 122 l10 -14 l8 22 l10 -26 l8 30 l10 -18 l8 12 l10 -8" fill="none" stroke="#c9cdd8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M340 122 C 355 118, 365 118, 380 120 S 405 124, 420 121" fill="none" stroke="#f0a58e" stroke-width="3.5" stroke-linecap="round"/>
+          <text x="380" y="192" text-anchor="middle" font-size="13" fill="#c9cdd8" font-weight="700">02 驯服噪声 · Variance</text>
+        </g>
+
+        <!-- 03 自主:山顶插旗的人 -->
+        <g>
+          <circle cx="645" cy="88" r="52" fill="rgba(255,255,255,.06)" stroke="rgba(223,226,234,.3)"/>
+          <path d="M612 122 L645 66 L678 122 Z" fill="none" stroke="#7fc7ea" stroke-width="3.5" stroke-linejoin="round"/>
+          <circle cx="645" cy="52" r="6" fill="#f0a58e"/>
+          <path d="M645 58 v12 m0 -8 l-8 6 m8 -6 l8 6" stroke="#f0a58e" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <path d="M645 66 l16 -8 l0 8 l-16 0" fill="#f0a58e"/>
+          <text x="645" y="158" text-anchor="middle" font-size="13" fill="#c9cdd8" font-weight="700">03 为估计负责 · Bias</text>
+        </g>
+      </svg>
+      <p class="cap">从抄别人的答案,到驯服自己的运气,再到<em>为自己的估计负责</em>。</p>
+    </div>
+  </section>
+
+  <section class="section" id="journey" data-spy>
+    <h2>三讲主线:一条误差观的进化</h2>
+    <p class="lead">每一讲驯服一种新的误差:分布偏移 → 方差 → 偏差。点击节点,跳到对应章节卡。</p>
+    <div class="journey">
+      <div class="jnode" data-target="#card-hw1">
+        <div class="dot">01</div>
+        <h3>模仿学习</h3>
+        <p>误差观:分布偏移<br>BC → DAgger</p>
+      </div>
+      <div class="jnode" data-target="#card-hw2">
+        <div class="dot">02</div>
+        <h3>策略梯度</h3>
+        <p>误差观:方差控制<br>REINFORCE → GAE</p>
+      </div>
+      <div class="jnode" data-target="#card-hw3">
+        <div class="dot">03</div>
+        <h3>Q 学习与 AC</h3>
+        <p>误差观:偏差控制<br>DQN → SAC</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="chapters" data-spy>
+    <h2>章节</h2>
+    <p class="lead">点击卡片直接进入本章子网页:原理讲解、实验证据、翻车博物馆、代码解剖、自测题。</p>
+    <div class="cards">
+      <a class="card" id="card-hw1" href="chapters/hw1-imitation.html">
+        <span class="k">第 1 讲 · 分布偏移</span>
+        <h3>向已经学会的专家学习</h3>
+        <p>同样是模仿:在 Ant 上几乎满分,在 Hopper 上却直接崩盘——同一个算法,
+          换一副身体、换一个任务,命运天差地别。差别不在网络大小,
+          而在你模仿的数据分布罩不罩得住这副身体。
+          本章讲清这件事在数学上意味着什么(复合误差),以及工程上怎么用 DAgger 落地补救。</p>
+        <div class="foot"><span class="chip ok">已完成</span><span class="btn">进入章节 →</span></div>
+      </a>
+      <a class="card" id="card-hw2" href="chapters/hw2-policy-gradient.html">
+        <span class="k">第 2 讲 · 方差控制</span>
+        <h3>亲手推导策略梯度,再驯服它的噪声</h3>
+        <p>从 score function trick 推出 REINFORCE:期望精确,但方差能大到学不动。
+          reward-to-go、baseline、GAE 是一套方差控制工具,我们逐个上秤——
+          哪件是底线、哪件是锦上添花,在四类环境里各见分晓。</p>
+        <div class="foot"><span class="chip ok">已完成</span><span class="btn">进入章节 →</span></div>
+      </a>
+      <a class="card" id="card-hw3" href="chapters/hw3-q-learning.html">
+        <span class="k">第 3 讲 · 偏差控制</span>
+        <h3>从打分表里读出策略</h3>
+        <p>从 Bellman 方程到 DQN 三件套与 double Q,再到连续动作的 SAC
+          (熵正则、reparametrize、clipped-Q):bootstrap 用偏差换方差,而偏差会复利。
+          同一目标下的三组对照实验,把"晃"与"歪"分开治。</p>
+        <div class="foot"><span class="chip ok">已完成</span><span class="btn">进入章节 →</span></div>
+      </a>
+    </div>
+  </section>
+
+  <section class="section" id="lab" data-spy>
+    <h2>实验室</h2>
+    <p class="lead">概念只有上手摸过才算学会。三个模块,点进去就是完整的互动子网页。</p>
+    <div class="cards">
+      <a class="card" href="lab/deadly-triad.html">
+        <span class="k">互动玩具</span>
+        <h3>死亡三合一滑块</h3>
+        <p>拖学习率 / 折扣 / 高估偏差,亲眼看 Q 迭代收敛 → 震荡 → 爆炸;
+          开关 target network,亲手感受"冻结靶子"压住了什么、压不住什么。</p>
+        <div class="foot"><span class="chip lab">可玩</span><span class="btn">打开 →</span></div>
+      </a>
+      <a class="card" href="lab/pomdp-memory.html">
+        <span class="k">自定义智能体 · 实验</span>
+        <h3>POMDP 记忆体</h3>
+        <p>遮住 CartPole 的速度观测,DQN 当场变瞎(500→35);再给它 GRU 记忆模块,看性能恢复。
+          含记忆内容线性探针实测与对照行为视频。</p>
+        <div class="foot"><span class="chip ok">实验完成</span><span class="btn">看结果 →</span></div>
+      </a>
+      <a class="card" href="chapters/hw3-q-learning.html#t-failures">
+        <span class="k">翻车博物馆</span>
+        <h3>失败案例陈列室</h3>
+        <p>CartPole lr=0.05 的高位震荡、LunarLander 冲 222 分后崩盘的 2 号种子、
+          Cheetah 上贴地一百万步的 REINFORCE-1、vanilla 坠毁视频——每个展品附归因。</p>
+        <div class="foot"><span class="chip bad">负面结果</span><span class="btn">去看展品 →</span></div>
+      </a>
+    </div>
+  </section>
+
+  <section class="section" id="zoo" data-spy>
+    <h2>智能体动物园</h2>
+    <p class="lead">每个智能体:行为视频 + 关键指标 + 三行训练日记。全部为自训模型实拍。</p>
+    <div class="vgrid">
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/ant_bc_own.mp4"></video>
+        <h3>Ant · BC(第 1 讲)</h3>
+        <p>MuJoCo Ant,6 维连续动作;BC 训练 1 轮。两局 4672 / 4790 ≈ 专家水平。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/hopper_dagger_own.mp4"></video>
+        <h3>Hopper · DAgger 第 10 轮(第 1 讲)</h3>
+        <p>同一环境 BC 仅达专家 30%;DAgger 10 轮后两局 3708 / 3710 = 专家水平。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/cartpole_dqn.mp4"></video>
+        <h3>CartPole · DQN(第 3 讲)</h3>
+        <p>离散 2 动作,Double DQN 300k 步。两局 500 / 342;Q̂ 收敛至解析上限 ≈99。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/invpend_sac.mp4"></video>
+        <h3>InvertedPendulum · SAC reparametrize(第 3 讲)</h3>
+        <p>SAC(reparametrize 梯度)150k 步。两局 1000 / 1000,满分。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/hopper_clipq.mp4"></video>
+        <h3>Hopper · SAC clipped-Q(第 3 讲)</h3>
+        <p>SAC clipped-Q(双 critic 取 min)100k 步。两局 573 / 588;三种 backup 中最优。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/cheetah_reparam.mp4"></video>
+        <h3>HalfCheetah · SAC reparametrize(第 3 讲)</h3>
+        <p>6 维连续动作,1M 步训练。两局 3813 / 3866;同预算 REINFORCE-1 仅 97。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/lunar_doubleq_landing.mp4"></video>
+        <h3>LunarLander · Double DQN 最佳单局(第 3 讲)</h3>
+        <p>300k 步训练;连录 15 局取 2 局软着陆(186 / 167)。双峰行为:最优单局 200+,均值仍为负。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/pomdp_blind.mp4"></video>
+        <h3>CartPole 致盲版 · DQN/MLP(POMDP 实验)</h3>
+        <p>遮蔽 (v, ω) 观测,45 步即倒。同一算法:500 → 35。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/pomdp_gru.mp4"></video>
+        <h3>CartPole 致盲版 · GRU 记忆体(POMDP 实验)</h3>
+        <p>同样遮蔽,GRU 记忆体 181 步;hidden→v 线性探针 R² = 0.79。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" src="assets/videos/humanoid_clipq.mp4"></video>
+        <h3>Humanoid · SAC clipped-Q(第 3 讲)</h3>
+        <p>376 维观测 / 17 维动作,600k 步。两局 1032 / 886:能站能挪,尚未学会行走。</p>
+      </div>
+      <div class="vcard">
+        <video controls loop muted playsinline preload="metadata" poster="assets/images/hw3/mspacman_poster.png" src="assets/videos/mspacman_dqn.mp4"></video>
+        <h3>MsPacman · Double DQN(第 3 讲,门面)</h3>
+        <p>4×84×84 灰度帧输入,CNN + Double DQN 1M 步。两局 1110 / 1340;eval 峰值 1856。</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="footer">CS285 深度强化学习实战教程 · 个人学习作品 · 与官方讲义互补,不替代 ·
+    课程 starter code © UC Berkeley CS285 course staff · <a href="https://rail.eecs.berkeley.edu/deeprlcourse/" target="_blank" rel="noopener noreferrer">官方课程页</a></p>
+
+</div>
+<script src="assets/js/site.js"></script>
+</body>
+</html>
